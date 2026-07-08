@@ -6,6 +6,8 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-07
+
 ### Added
 - Initial FableFuse: Fable 5 (brain/advisor) + a swappable body/executor (Codex, no model version
   pinned by default, or Sonnet 5).
@@ -50,4 +52,3 @@ Found during live smoke + code review (native + `peer trio`) before the initial 
 ### Notes
 - Body invocation follows steipete/agent-scripts `codex-first` (`codex exec --yolo
   -c model_reasoning_effort=high`, prompt on stdin).
-- Not yet released publicly — no tags, packages, or remote until a maintainer approves.
