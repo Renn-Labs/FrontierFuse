@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FableFuse orchestrator body-caller shim -> fable_dispatch.py
+set -euo pipefail
+DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec python3 "$DIR/fable_dispatch.py" "$@"

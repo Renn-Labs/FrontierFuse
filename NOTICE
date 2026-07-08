@@ -1,0 +1,22 @@
+FableFuse
+=========
+
+FableFuse pairs Fable 5 (brain / advisor) with Codex 5.5-high (body / executor).
+
+Portions of this project are adapted from FleetFuse (MIT License, Copyright (c)
+2026 hkeys.ai):
+  - `fable_scrub.py` is a verbatim copy of FleetFuse's `fleet_scrub.py`.
+  - The artifact-capture and bounded handoff-card helpers in `fable_common.py`
+    are adapted from FleetFuse's `fleet_mcp.py` / `fleet-fuse.py`.
+
+Those portions retain their original MIT terms.
+
+Optional runtime dependencies (not bundled):
+  - a logged-in Codex CLI with access to a `gpt-5.5-codex`-class model
+    (override the command with FABLE_CODEX_CMD),
+  - a `claude` CLI with access to a Fable-capable model
+    (override the command with FABLE_ADVISOR_CMD).
+
+FableFuse coordinates model outputs and preserves deterministic verification
+artifacts; it does not guarantee that any model output is correct, safe, or
+complete. See README.md "Honest limits".

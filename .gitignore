@@ -1,0 +1,20 @@
+# runtime-generated body/advisor artifacts (regenerated per run)
+runs/
+verdict.json
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.log
+
+# local orchestration/session state (lives under ~/.config/fable-fuse; never committed)
+.omc/
+.omx/
+
+# raw build-in-public journal; local source material, not public release history
+.buildlog/
+
+# NOTE: skills/fablefuse/ IS source and is intentionally NOT ignored.

@@ -1,0 +1,35 @@
+name: offline
+
+# Keyless, offline-only CI. No API keys, no live model calls — mirrors FableFuse's boundary.
+# Runs the stdlib-only contract suite + compile checks on the supported Python range.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Byte-compile all modules
+        run: python -m compileall -q fable_common.py fable_advisor.py fable_advisor_mcp.py fable_dispatch.py fable_verify.py fable_scrub.py hooks tests
+      - name: Foundation smoke (no keys)
+        run: python fable_common.py
+      - name: Offline contract suite
+        run: python tests/fable_contracts.py
+      - name: Doctor (offline-ok)
+        run: python fable_dispatch.py doctor || true

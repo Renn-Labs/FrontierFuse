@@ -1,0 +1,20 @@
+{
+  "//": "FableFuse hooks for Claude Code. `python3 fable_dispatch.py install-hooks` merges these into ~/.claude/settings.json automatically (replacing <REPO> with the repo's absolute path) and makes a .json.bak backup. Shown here for reference / manual install. The gate is INERT until `fable-dispatch arm`; kill-switch FABLE_GUARDS_OFF=1.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          { "type": "command", "command": "python3 <REPO>/hooks/fable_gate.py" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python3 <REPO>/hooks/fable_verify_gate.py" }
+        ]
+      }
+    ]
+  }
+}

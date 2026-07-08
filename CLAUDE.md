@@ -1,0 +1,47 @@
+# FableFuse Agent Guidance
+
+FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **body/
+executor** (**Codex** by default — no model version pinned, see README "Staying current on model
+names" — or **Sonnet 5**). Keep changes aligned with the core
+promise: two selectable control flows (advisor default, orchestrator), a **deterministic** verify
+gate, a narrowed & kill-switchable hard gate, pluggable executor, and local-first setup — all
+stdlib-only and offline-testable.
+
+## Architecture (don't drift from this)
+
+- `fable_common.py` — the shared contract: config toggles + precedence, per-session state, verdict
+  schema, command builders (`build_body_command` dispatches on `executor`), artifact/handoff-card
+  helpers, kill-switch. Everything imports it; don't fork its logic.
+- `fable_advisor.py` / `fable_advisor_mcp.py` — advisor mode (`ask_fable`): executor drives, Fable
+  advises on-demand.
+- `fable_dispatch.py` — orchestrator body-caller + control CLI (arm/dispatch/verify/config/doctor/
+  install-hooks). Uses `build_body_command` so the executor is swappable.
+- `fable_verify.py` — deterministic gate → `verdict.json` (GREEN iff the gate's exit code is 0).
+- `hooks/fable_gate.py` (PreToolUse) + `hooks/fable_verify_gate.py` (Stop) — the hard gate. Inert
+  unless armed; honour `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
+
+## Invariants
+
+- **stdlib-only, Python 3.10+.** No third-party imports in the shipped modules.
+- **The loop closes only on a fresh deterministic GREEN** (verdict stamped after the last dispatch).
+  A prose verdict must never be able to satisfy the Stop gate.
+- **The hard gate is narrowed** — mutation tools + a Bash allowlist, not a blanket block. Keep the
+  trivial-edit escape and kill-switch.
+- **Body invocation** stays on the proven pattern (`codex exec --yolo -c model_reasoning_effort=<e>`,
+  prompt on stdin). Keep it overridable via `FABLE_*_CMD`.
+
+## Verification
+
+Before claiming a change works: `python3 tests/fable_contracts.py` must print PASS, and drive the
+real CLI for anything with runtime behaviour (dispatch dry-run, gate hook with synthetic JSON,
+`verify --gate`). Tests must stay keyless/offline (dummy `FABLE_CODEX_CMD`/`FABLE_ADVISOR_CMD`).
+
+## Public launch boundary
+
+- Do **not** create the GitHub remote, push, tag a release, publish packages, or make the repo
+  public without explicit maintainer approval.
+- Keep claims precise: FableFuse coordinates a body engine and preserves deterministic verification
+  artifacts. It is not a proven autonomous workforce; do not claim superiority over prior art it
+  builds on (steipete/agent-scripts `codex-first`).
+- CI stays keyless and offline unless a maintainer explicitly approves a live-provider gate.
+- Never commit secrets, provider logs, generated `runs/`, or `verdict.json`.
