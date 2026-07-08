@@ -29,6 +29,13 @@ versioning once it reaches 1.0.
   registered the skills on its own — only the plugin path does that automatically.
 
 ### Fixed
+- **`plugin.json` declared `"hooks": "./hooks/hooks.json"` explicitly, which broke a REAL install**
+  (`claude plugin marketplace add` + `claude plugin install` — `claude plugin validate .` did NOT
+  catch this). `hooks/hooks.json` is auto-loaded by convention; declaring it in the manifest too
+  caused "Duplicate hooks file detected" and the plugin failed to load. Removed the `hooks` key —
+  `manifest.hooks` is only for *additional*, non-standard hook files. Lesson: `claude plugin
+  validate` is not a substitute for an actual `marketplace add` + `install` — do both.
+
 Found by live-loading the plugin (`claude --plugin-dir .`) and actually arming a real nested
 session — not a synthetic test:
 - **The Bash allowlist fought its own brain on the most natural invocations.** A just-armed session

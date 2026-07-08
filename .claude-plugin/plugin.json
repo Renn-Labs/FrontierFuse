@@ -19,6 +19,5 @@
   "skills": [
     "./skills/fablefuse/",
     "./skills/fablefuse-config/"
-  ],
-  "hooks": "./hooks/hooks.json"
+  ]
 }
