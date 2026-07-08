@@ -6,6 +6,12 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-08
+
+### Fixed
+- The tracked pre-push release gate now allows clean, up-to-date public clones to pass while still
+  requiring a version bump when a local branch is ahead of upstream.
+
 ## [0.2.2] - 2026-07-08
 
 ### Added

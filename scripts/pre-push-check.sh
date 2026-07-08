@@ -100,15 +100,22 @@ upstream = subprocess.run(
     text=True,
 )
 if upstream.returncode == 0:
+    upstream_ref = upstream.stdout.strip()
     old = subprocess.run(
-        ["git", "show", f"{upstream.stdout.strip()}:.claude-plugin/plugin.json"],
+        ["git", "show", f"{upstream_ref}:.claude-plugin/plugin.json"],
         capture_output=True,
         text=True,
     )
     if old.returncode == 0 and old.stdout.strip():
         old_version = json.loads(old.stdout).get("version", "")
         if re.fullmatch(r"\d+\.\d+\.\d+", old_version):
-            if semver_tuple(version) <= semver_tuple(old_version):
+            ahead = subprocess.run(
+                ["git", "rev-list", "--count", f"{upstream_ref}..HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            has_local_commits = ahead.returncode == 0 and int(ahead.stdout.strip() or "0") > 0
+            if has_local_commits and semver_tuple(version) <= semver_tuple(old_version):
                 errors.append(
                     f"version must be bumped above upstream {old_version}; current is {version}"
                 )

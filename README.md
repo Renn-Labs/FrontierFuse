@@ -71,7 +71,7 @@ gate is registered (still **inert** until you run `fable-dispatch arm`; honours
 /reload-plugins
 ```
 
-After upgrading to `0.2.2`, `fable-dispatch config --executor opus` selects Opus as the lead/body
+After upgrading to `0.2.3`, `fable-dispatch config --executor opus` selects Opus as the lead/body
 executor while Fable remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
 
 **Developing/testing locally**, before or without publishing to a marketplace:
