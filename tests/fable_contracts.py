@@ -339,6 +339,45 @@ def test_pretool_gate_blocks_bash_chaining() -> None:
         fc.clear_state(sid)
 
 
+def test_pretool_gate_allows_realistic_invocation_forms() -> None:
+    """Regression (found via live dogfooding, not a synthetic test): a just-armed session's own
+    brain naturally invokes allowlisted scripts as `python3 <script> ...` and sometimes prefixes a
+    scoped env var (`FOO=bar cmd`) — neither form matched a literal prefix check, so the brain
+    immediately got blocked fighting its own gate on the most natural invocations. These must be
+    ALLOWED (the metacharacter/chaining check must still catch anything actually dangerous)."""
+    gate = ROOT / "hooks" / "fable_gate.py"
+    if not gate.is_file() or _load_hook("hooks/fable_gate.py") is None:
+        return
+
+    sid = "contract-realistic-invocations"
+    fc.clear_state(sid)
+    try:
+        fc.write_state(sid, armed=True)
+
+        allowed_commands = [
+            "python3 fable_dispatch.py --help",
+            "python3 fable_dispatch.py arm",
+            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help",
+            "FABLE_GATE_ALLOW_TRIVIAL=1 wc -l fable_dispatch.py hooks/fable_gate.py fable_common.py",
+            "fable-dispatch disarm",
+            "python3 fable_verify.py --gate \"true\"",
+        ]
+        for cmd in allowed_commands:
+            proc = _run_hook(gate, _pretool_payload(sid, "Bash", {"command": cmd}))
+            assert _pretool_allowed(proc), f"{cmd!r} must be allowed; stdout={proc.stdout!r}"
+
+        # normalization must never defeat the chaining check, even with an env/interpreter prefix
+        still_denied = [
+            "python3 fable_dispatch.py --help && rm -rf /tmp/x",
+            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help; rm -rf /tmp/x",
+        ]
+        for cmd in still_denied:
+            proc = _run_hook(gate, _pretool_payload(sid, "Bash", {"command": cmd}))
+            assert _pretool_denied(proc), f"{cmd!r} must still be denied; stdout={proc.stdout!r}"
+    finally:
+        fc.clear_state(sid)
+
+
 def test_session_id_defaults_to_claude_code_session_id() -> None:
     """Regression: without FABLE_SESSION_ID, fable-dispatch must key state by
     CLAUDE_CODE_SESSION_ID (what the real PreToolUse/Stop hooks receive) — not the
@@ -423,6 +462,7 @@ def main() -> int:
         test_guards_off_honors_kill_switches,
         test_pretool_gate_contracts,
         test_pretool_gate_blocks_bash_chaining,
+        test_pretool_gate_allows_realistic_invocation_forms,
         test_session_id_defaults_to_claude_code_session_id,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,

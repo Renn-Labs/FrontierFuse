@@ -47,16 +47,43 @@ python3 tests/fable_contracts.py   # offline contract suite (should print PASS)
 python3 fable_dispatch.py doctor   # readiness table
 ```
 
-## Install (link the skill + hooks into Claude Code)
+## Install
+
+FableFuse ships as a real Claude Code plugin (`.claude-plugin/plugin.json`) — hooks auto-register,
+skills auto-discover, no config-file editing required.
+
+**Inside a Claude Code session:**
+
+```
+/plugin marketplace add Renn-Labs/FableFuse
+/plugin install fablefuse@fablefuse
+```
+
+That's it — `/fablefuse` and `/fablefuse-config` are now available, and the orchestrator-mode hard
+gate is registered (still **inert** until you run `fable-dispatch arm`; honours
+`FABLE_GUARDS_OFF=1`/`CLAUDE_GUARDS_OFF=1`).
+
+**Developing/testing locally**, before or without publishing to a marketplace:
 
 ```bash
-python3 fable_dispatch.py install-hooks     # reversible; backs up settings.json; gate stays INERT until armed
+git clone https://github.com/Renn-Labs/FableFuse.git && cd FableFuse
+claude plugin validate .        # manifest schema check
+claude --plugin-dir .            # load it for this session only, no marketplace needed
+# after editing hooks/skills: /reload-plugins inside the session picks up changes, no restart
+```
+
+**Option B — manual install (no marketplace, e.g. hardened/offline environments):**
+
+```bash
+python3 fable_dispatch.py install-hooks     # reversible; backs up settings.json
 # add bin/ to PATH for the `fable-dispatch` / `ask-fable` shims, or call the .py files directly
 ```
 
-`install-hooks` merges two hooks into `~/.claude/settings.json` (respects `$CLAUDE_CONFIG_DIR`) and
-writes a `.json.bak`. Remove them any time with `uninstall-hooks`. The hard gate does nothing until
-you run `fable-dispatch arm` in an orchestrator session, and honours `FABLE_GUARDS_OFF=1`.
+`install-hooks` merges the two hooks into `~/.claude/settings.json` (respects `$CLAUDE_CONFIG_DIR`)
+and writes a `.json.bak`. Remove them any time with `uninstall-hooks`. Note: this path does **not**
+register the skills — `/fablefuse`/`/fablefuse-config` still need the plugin install (or a manual
+symlink into `~/.claude/skills/`) to actually trigger. `fable-dispatch doctor` reports which install
+path (if any) is active.
 
 ## Advisor mode (default)
 
@@ -79,10 +106,16 @@ fable-dispatch verify --gate "pytest -q"                    # deterministic: GRE
 fable-dispatch done                                         # only closes on a fresh GREEN
 ```
 
-## Configure (session or permanent)
+## Configure (session or permanent — including mid-flight)
 
-Precedence: **per-call flag > session config > `~/.config/fable-fuse/config.json` > env > default.**
-Persist per-session with `fable-dispatch config …`, or permanently with `--global`.
+**Mid-session, interactively:** run `/fablefuse-config` any time — asks scope/executor/effort/fast
+via a short question flow and applies it immediately (no restart). It only runs when you explicitly
+invoke it (`disable-model-invocation: true`), so the brain never reconfigures itself on its own.
+
+**Directly, from the CLI:** precedence is **per-call flag > session config >
+`~/.config/fable-fuse/config.json` > env > default.** Persist per-session with `fable-dispatch
+config …`, or permanently with `--global`. Either way, a change takes effect on the *next*
+`fable-dispatch` call — it does not affect a body that's already running.
 
 | toggle | env | default | purpose |
 |-|-|-|

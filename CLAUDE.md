@@ -19,6 +19,20 @@ stdlib-only and offline-testable.
 - `fable_verify.py` — deterministic gate → `verdict.json` (GREEN iff the gate's exit code is 0).
 - `hooks/fable_gate.py` (PreToolUse) + `hooks/fable_verify_gate.py` (Stop) — the hard gate. Inert
   unless armed; honour `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
+- `skills/fablefuse-config/SKILL.md` — interactive mid-flight config; must only ever call
+  `fable-dispatch config` (never invent a second config storage path).
+
+## Packaging (primary path — keep in sync with the manual fallback)
+
+- `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json` are the primary install surface
+  (self-referential marketplace — verified against the real `Renn-Labs/loopprint` pattern, not
+  assumed). `hooks/hooks.json` auto-registers the two hooks via `$CLAUDE_PLUGIN_ROOT`-relative
+  commands; skills auto-discover from `skills/`.
+- `fable_dispatch.py install-hooks`/`uninstall-hooks` remain as a documented manual fallback
+  (Option B) for environments without marketplace access. If you change what the hooks do or where
+  they live, update **both** paths — `hooks/hooks.json` and `settings.hooks.snippet.json` — so they
+  don't drift apart.
+- Bump `version` in `plugin.json` **and** `marketplace.json` together; keep them equal.
 
 ## Invariants
 

@@ -189,17 +189,29 @@ def cmd_doctor(_args) -> int:
     body_cmd = fc.build_body_command(cfg)
     fable_cmd = fc.build_fable_command(cfg)
     settings = Path.home() / ".claude" / "settings.json"
-    hooks_installed = settings.is_file() and "fable_gate.py" in settings.read_text()
+    manual_hooks_installed = settings.is_file() and "fable_gate.py" in settings.read_text()
+    plugin_manifest_present = (HERE / ".claude-plugin" / "plugin.json").is_file()
+    running_as_plugin = bool(os.environ.get("CLAUDE_PLUGIN_ROOT"))
     state_ok = os.access(fc.STATE_DIR.parent if not fc.STATE_DIR.exists() else fc.STATE_DIR,
                          os.W_OK) or _mkdir_ok(fc.STATE_DIR)
 
     def mark(ok):
         return "\033[32mok\033[0m" if ok else "\033[33m--\033[0m"
 
+    if running_as_plugin:
+        install_row = ("hooks", True, f"auto-registered by Claude Code plugin (${{CLAUDE_PLUGIN_ROOT}}={os.environ['CLAUDE_PLUGIN_ROOT']})")
+    elif manual_hooks_installed:
+        install_row = ("hooks", True, f"manually installed (Option B) — {settings}")
+    else:
+        install_row = ("hooks", False,
+                       "not installed — run `/plugin marketplace add Renn-Labs/FableFuse` then "
+                       "`/plugin install fablefuse@fablefuse` (or `install-hooks` for the manual path)")
+
     rows = [
         (f"{cfg['executor']} body CLI", bool(shutil.which(body_cmd[0])), " ".join(body_cmd)),
         ("fable brain CLI", bool(shutil.which(fable_cmd[0])), " ".join(fable_cmd)),
-        ("hooks installed", hooks_installed, str(settings)),
+        ("plugin manifest", plugin_manifest_present, str(HERE / ".claude-plugin" / "plugin.json")),
+        install_row,
         ("state dir writable", state_ok, str(fc.STATE_DIR)),
     ]
     print("FableFuse doctor\n")

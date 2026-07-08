@@ -6,6 +6,39 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-08
+
+### Added
+- **Real Claude Code plugin packaging**: `.claude-plugin/plugin.json` + a self-referential
+  `.claude-plugin/marketplace.json` (matching the established `Renn-Labs/loopprint` pattern —
+  verified directly against the real installed plugin, not assumed). Hooks now auto-register from
+  `hooks/hooks.json` and skills auto-discover from `skills/` — no `settings.json` editing required.
+  Install: `/plugin marketplace add Renn-Labs/FableFuse` then `/plugin install fablefuse@fablefuse`.
+  Local dev: `claude plugin validate .` / `claude --plugin-dir .`.
+- **`/fablefuse-config`**: a new interactive skill for changing executor/model/effort/fast
+  mid-session (`disable-model-invocation: true` — only runs on explicit request). Wraps the
+  existing, tested `fable-dispatch config` CLI rather than introducing new config storage; applies
+  to the next dispatch, no restart needed.
+- `fable-dispatch doctor` now reports plugin-manifest presence and which install path (native
+  plugin vs. manual `install-hooks`) is actually active.
+
+### Changed
+- The original `fable_dispatch.py install-hooks`/`uninstall-hooks` path (merges hooks into
+  `~/.claude/settings.json`) is kept as a documented fallback ("Option B") for environments that
+  can't use the marketplace/plugin system, but is no longer the primary install path. Note it never
+  registered the skills on its own — only the plugin path does that automatically.
+
+### Fixed
+Found by live-loading the plugin (`claude --plugin-dir .`) and actually arming a real nested
+session — not a synthetic test:
+- **The Bash allowlist fought its own brain on the most natural invocations.** A just-armed session
+  immediately got blocked trying `python3 fable_dispatch.py --help` (only the bare `fable_dispatch.py`
+  prefix matched, not the `python3 <script>` form everyone actually types) and blocked trying an
+  inline env-var prefix like `FABLE_GUARDS_OFF=1 python3 ...`. The gate now strips a leading
+  interpreter (`python3`/`python`) and leading `VAR=value` assignments before the allowlist
+  comparison — the dangerous-metacharacter/chaining check still runs on the untouched original
+  string, so this closes a real usability gap without reopening the security fix from `0.1.0`.
+
 ## [0.1.0] - 2026-07-07
 
 ### Added

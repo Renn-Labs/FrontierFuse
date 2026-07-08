@@ -170,6 +170,9 @@ fable-dispatch config          # print effective config
 
 Precedence: per-call flag > session config > `~/.config/fable-fuse/config.json` > env.
 
+**Mid-flight:** run `/fablefuse-config` for an interactive prompt instead of typing flags — same
+underlying command, applies to the *next* dispatch, no restart needed.
+
 ---
 
 ## Shared reference
@@ -179,10 +182,11 @@ Precedence: per-call flag > session config > `~/.config/fable-fuse/config.json` 
 | `fable_common` (`fc`) | Config, state, verdict schema, command builders, artifacts |
 | `fable-dispatch` | arm · dispatch · verify · done · config · doctor |
 | `ask_fable` / `ask-fable` | Advisor-mode on-demand Fable consult |
+| `/fablefuse-config` | Interactive mid-flight config (executor/model/effort/fast) — either mode |
 | `runs/fable-*` | Raw body transcripts |
 | `~/.config/fable-fuse/state/<session>.json` | armed, last_dispatch_ts, verdict |
 
-**Doctor:** `fable-dispatch doctor` — codex/claude on PATH, hooks, writable state.
+**Doctor:** `fable-dispatch doctor` — codex/claude on PATH, plugin manifest, hooks, writable state.
 
 ---
 

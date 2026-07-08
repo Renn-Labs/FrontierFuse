@@ -1,0 +1,29 @@
+{
+  "description": "FableFuse orchestrator-mode hard gate. Inert unless a session is armed via `fable-dispatch arm`; honours FABLE_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/fable_gate.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/fable_verify_gate.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

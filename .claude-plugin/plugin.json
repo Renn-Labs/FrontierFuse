@@ -1,0 +1,24 @@
+{
+  "name": "fablefuse",
+  "version": "0.2.0",
+  "description": "Fable 5 (brain/advisor) + Codex/Sonnet (body/executor), fused into one Claude Code workflow. Advisor mode (default, cost-optimal) and orchestrator mode (hard-gated dispatch loop with a deterministic verdict).",
+  "author": {
+    "name": "Renn Labs"
+  },
+  "repository": "https://github.com/Renn-Labs/FableFuse",
+  "homepage": "https://github.com/Renn-Labs/FableFuse",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "fable",
+    "codex",
+    "orchestration",
+    "agentic-ai"
+  ],
+  "skills": [
+    "./skills/fablefuse/",
+    "./skills/fablefuse-config/"
+  ],
+  "hooks": "./hooks/hooks.json"
+}
