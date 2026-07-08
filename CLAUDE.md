@@ -1,8 +1,8 @@
 # FableFuse Agent Guidance
 
-FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **body/
-executor** (**Codex** by default — no model version pinned, see README "Staying current on model
-names" — or **Sonnet 5**). Keep changes aligned with the core
+FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **lead/
+body/executor** (**Codex** by default — no model version pinned, see README "Staying current on model
+names" — or **Sonnet 5** / **Opus 5** through the Claude CLI). Keep changes aligned with the core
 promise: two selectable control flows (advisor default, orchestrator), a **deterministic** verify
 gate, a narrowed & kill-switchable hard gate, pluggable executor, and local-first setup — all
 stdlib-only and offline-testable.
@@ -10,7 +10,7 @@ stdlib-only and offline-testable.
 ## Architecture (don't drift from this)
 
 - `fable_common.py` — the shared contract: config toggles + precedence, per-session state, verdict
-  schema, command builders (`build_body_command` dispatches on `executor`), artifact/handoff-card
+  schema, command builders (`build_body_command` dispatches on `executor=codex|sonnet|opus`), artifact/handoff-card
   helpers, kill-switch. Everything imports it; don't fork its logic.
 - `fable_advisor.py` / `fable_advisor_mcp.py` — advisor mode (`ask_fable`): executor drives, Fable
   advises on-demand.
@@ -59,3 +59,15 @@ real CLI for anything with runtime behaviour (dispatch dry-run, gate hook with s
   builds on (steipete/agent-scripts `codex-first`).
 - CI stays keyless and offline unless a maintainer explicitly approves a live-provider gate.
 - Never commit secrets, provider logs, generated `runs/`, or `verdict.json`.
+
+## Public release scrub memory
+
+- This rule is cross-agent project memory. Keep it aligned with `AGENTS.md` and
+  `docs/PUBLIC_RELEASE_CHECKLIST.md` so Claude Code, Codex, Grok, and other agents see the same gate.
+- Before public push, tag, release, marketplace update, or repo-publication work, run
+  `scripts/pre-push-check.sh`; before first public exposure or after history rewrites, also run
+  `scripts/public-release-scrub.py --all-history`.
+- Do not print matched secret values. Report only file, line, commit scope, and finding type.
+- Test fixtures must not contain complete token-shaped literals; build fake values from pieces.
+- If a real secret appears in files or history, stop release work, rotate/revoke it, and scrub local
+  history before pushing.

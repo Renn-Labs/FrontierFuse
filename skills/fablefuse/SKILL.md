@@ -1,15 +1,15 @@
 ---
 name: fablefuse
 description: >
-  FableFuse brain/body pairing — Codex 5.5-high (BODY/executor) + Fable 5 (BRAIN/advisor).
+  FableFuse brain/body pairing — swappable Codex/Sonnet/Opus lead/body + Fable 5 (BRAIN/advisor).
   Two modes: advisor (default, cost-optimal) and orchestrator (hard-gated dispatch loop).
   Use on /fablefuse, "fablefuse", "fable fuse", "fable brain", or when pairing Fable planning
-  with Codex execution.
+  with Codex/Sonnet/Opus execution.
 ---
 
 # FableFuse
 
-Pair **Fable 5** (brain) with **Codex 5.5-high** (body). Pick a mode at session start; stay in it unless the user switches.
+Pair **Fable 5** (brain/advisor) with a swappable **Codex/Sonnet/Opus** lead/body. Pick a mode at session start; stay in it unless the user switches.
 
 **Status line — lead every reply:**
 
@@ -24,15 +24,15 @@ Pair **Fable 5** (brain) with **Codex 5.5-high** (body). Pick a mode at session 
 
 ## Mode selection
 
-| Mode | Main loop | Fable role | Codex role | Cost profile |
+| Mode | Main loop | Fable role | Lead/body role | Cost profile |
 |------|-----------|------------|------------|--------------|
-| **advisor** (default) | Executor (Codex 5.5-high or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at cheaper executor rate |
+| **advisor** (default) | Executor/lead (Codex 5.5-high, Sonnet 5, Opus 5, or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at lead/executor rate |
 | **orchestrator** | Fable (in-session brain) | Plans, routes, verifies, synthesizes | Dispatched bodies only | Fable tokens + bounded body cards |
 
 **Default to advisor** unless the user says orchestrator, `/fablefuse orchestrator`, or wants hard-gated delegation.
 
-**Executor** (the body/driver) is swappable: `codex` (Codex 5.5-high, default) or `sonnet` (Sonnet 5).
-Set per-session or permanently: `fable-dispatch config --executor codex|sonnet [--global]`.
+**Executor** (the lead/body/driver) is swappable: `codex` (Codex 5.5-high, default), `sonnet` (Sonnet 5), or `opus` (Opus 5).
+Set per-session or permanently: `fable-dispatch config --executor codex|sonnet|opus [--global]`.
 
 ---
 
@@ -100,10 +100,11 @@ ask-fable "Your focused question — include only decision-relevant context"
 
 ### Advisor config (optional)
 
-Model/effort for Codex bodies when you spawn them manually:
+Model/effort for selected bodies when you spawn them manually (`--model` is Codex-specific;
+use `--sonnet-model` or `--opus-model` for Claude-CLI leads):
 
 ```bash
-fable-dispatch config [--executor codex|sonnet] [--model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
+fable-dispatch config [--executor codex|sonnet|opus] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
 ```
 
 Effective defaults: no pinned model (Codex's own current default) @ `high` effort; pin a specific
@@ -114,7 +115,7 @@ effort (and optional lighter model).
 
 ## Orchestrator mode
 
-Fable is the **in-session brain**. Codex is the **sole body** — all execution, research, tool use, and MCP gathering goes through dispatch. A **hard gate** blocks direct mutation while armed.
+Fable is the **in-session brain**. The selected executor (`codex`, `sonnet`, or `opus`) is the **body** — all execution, research, tool use, and MCP gathering goes through dispatch. A **hard gate** blocks direct mutation while armed.
 
 ### Arm (session start)
 
@@ -164,7 +165,7 @@ Only after fresh **GREEN**. Disarms guards.
 ### Orchestrator config
 
 ```bash
-fable-dispatch config [--executor codex|sonnet] [--model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
+fable-dispatch config [--executor codex|sonnet|opus] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
 fable-dispatch config          # print effective config
 ```
 
@@ -199,6 +200,7 @@ underlying command, applies to the *next* dispatch, no restart needed.
 ```bash
 fable-dispatch arm
 fable-dispatch config --fast off --effort high
+fable-dispatch config --executor opus     # optional: Opus lead/body, Fable remains advisor/brain
 fable-dispatch "Implement X per spec; run relevant checks"
 fable-dispatch verify --gate "pytest -q"
 # RED → fix dispatch → verify again

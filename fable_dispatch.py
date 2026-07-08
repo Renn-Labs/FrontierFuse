@@ -2,16 +2,17 @@
 """fable_dispatch.py — orchestrator-mode body-caller + control CLI for FableFuse.
 
 In orchestrator mode Fable (the in-session brain) never executes directly. It delegates every
-execution/research/tool/MCP task to Codex 5.5-high bodies through this CLI, reads the bounded
+execution/research/tool/MCP task to the selected body/lead executor through this CLI, reads the bounded
 handoff cards, verifies against raw diff + gate stdout, and only closes on a fresh GREEN verdict.
 
 Subcommands:
-  dispatch "task" [...]        run one Codex body (or several with --parallel)
+  dispatch "task" [...]        run one selected body/lead executor (or several with --parallel)
   --parallel / -p t...         fan out N concurrent bodies (cap FABLE_MAX_PARALLEL, default 4)
   --fanout tasks.json          fan out tasks from a JSON list (strings or {"task": ...})
   arm | disarm | done          toggle the per-session hard-gate marker
   verify --gate "pytest -q"     run a deterministic acceptance gate -> verdict.json
-  config [--model --effort --fast on|off --global]   print/persist toggles
+  config [--executor codex|sonnet|opus --model --sonnet-model --opus-model --effort --fast on|off --global]
+                                print/persist toggles
   doctor                       readiness table
   install-hooks | uninstall-hooks   reversible merge of the hooks into ~/.claude/settings.json
 
@@ -42,7 +43,7 @@ SUBCOMMANDS = {"dispatch", "arm", "disarm", "done", "verify", "config", "doctor"
 
 
 # --------------------------------------------------------------------------- #
-# dispatch — run Codex bodies
+# dispatch — run selected bodies
 # --------------------------------------------------------------------------- #
 def _overrides(args) -> dict:
     ov: dict = {}
@@ -56,6 +57,8 @@ def _overrides(args) -> dict:
         ov["executor"] = args.executor
     if getattr(args, "sonnet_model", None):
         ov["sonnet_model"] = args.sonnet_model
+    if getattr(args, "opus_model", None):
+        ov["opus_model"] = args.opus_model
     return ov
 
 
@@ -85,7 +88,7 @@ def cmd_dispatch(args) -> int:
     cmd = fc.build_body_command(cfg)
     run_id = fc.new_run_id()
     if args.budget_usd:
-        print(f"# soft budget: ${args.budget_usd:.2f} (informational; Codex billing is external)",
+        print(f"# soft budget: ${args.budget_usd:.2f} (informational; provider billing is external)",
               file=sys.stderr)
 
     parallel = args.parallel or len(tasks) > 1
@@ -114,7 +117,7 @@ def cmd_dispatch(args) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_arm(_args) -> int:
     fc.write_state(SESSION_ID, armed=True)
-    print(f"armed (session {SESSION_ID}) — hard gate active. Delegate execution to Codex; "
+    print(f"armed (session {SESSION_ID}) — hard gate active. Delegate execution to the selected body; "
           f"finish only on a fresh GREEN verdict. Kill-switch: FABLE_GUARDS_OFF=1.")
     return 0
 
@@ -167,6 +170,8 @@ def cmd_config(args) -> int:
         patch["executor"] = args.executor
     if args.sonnet_model is not None:
         patch["sonnet_model"] = args.sonnet_model
+    if args.opus_model is not None:
+        patch["opus_model"] = args.opus_model
     if patch:
         if args.glob:
             fc.save_global_config(patch)
@@ -310,7 +315,7 @@ def cmd_uninstall_hooks(_args) -> int:
 # --------------------------------------------------------------------------- #
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="fable-dispatch", description="FableFuse orchestrator body-caller")
-    ap.add_argument("tasks", nargs="*", help="task string(s) to dispatch to Codex bodies")
+    ap.add_argument("tasks", nargs="*", help="task string(s) to dispatch to selected bodies")
     ap.add_argument("--parallel", "-p", action="store_true", help="fan out tasks concurrently")
     ap.add_argument("--fanout", default="", help="JSON file of tasks (strings or {task:...})")
     ap.add_argument("--dry-run", action="store_true", help="build the command; make no engine call")
@@ -319,9 +324,10 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", default=None, help="override codex body model for this run")
     ap.add_argument("--effort", choices=["low", "medium", "high"], default=None)
     ap.add_argument("--fast", choices=["on", "off"], default=None)
-    ap.add_argument("--executor", choices=["codex", "sonnet"], default=None,
-                    help="body/driver engine (codex 5.5-high or sonnet 5)")
+    ap.add_argument("--executor", choices=["codex", "sonnet", "opus"], default=None,
+                    help="body/driver engine (codex, sonnet, or opus)")
     ap.add_argument("--sonnet-model", dest="sonnet_model", default=None)
+    ap.add_argument("--opus-model", dest="opus_model", default=None)
     ap.add_argument("--gate", default="", help="verify: acceptance command")
     ap.add_argument("--cwd", default=".", help="verify: working dir")
     ap.add_argument("--global", dest="glob", action="store_true", help="config: persist globally")

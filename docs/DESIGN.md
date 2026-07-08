@@ -3,13 +3,13 @@
 ## Context
 
 The user wants a new companion to FleetFuse called **FableFuse** with a fixed two-role shape:
-**Fable (Claude Fable 5) is the in-session BRAIN** (plans, decides execution width on the fly,
-verifies, synthesizes — never executes); **Codex 5.5-high is the sole BODY** (all execution,
-agentic work, research, tool-calling, MCP-gathering) via
-`codex exec --model gpt-5.5-codex -c model_reasoning_effort=high`.
+**Fable (Claude Fable 5) is the in-session BRAIN/advisor** (plans, advises, verifies, synthesizes —
+never executes); the selected **lead/BODY** performs execution, agentic work, research,
+tool-calling, and MCP gathering. The default body is Codex via
+`codex exec -c model_reasoning_effort=high`; Sonnet and Opus are selectable Claude-CLI bodies/leads.
 
 Confirmed decisions:
-- **Router = free-form in-session** (Fable chooses one vs many Codex bodies per turn; no separate
+- **Router = free-form in-session** (Fable chooses one vs many selected bodies per turn; no separate
   orchestrator process). Keep it, but persist a lightweight **verification contract**.
 - **Packaging = Claude Code plugin**: `/fablefuse` SKILL + thin `fable-dispatch` helper + hooks.
 - **Enforcement = hard gate**, but **narrowed** (see council revisions).
@@ -21,6 +21,8 @@ Confirmed decisions:
   used. See README "Staying current on model names".)
 - **Repo = its own standalone, SELF-CONTAINED OSS repo** at `~/repos/FableFuse` (copies the small
   FleetFuse helpers in; no runtime dependency on FleetFuse). GitHub publish stays human-gated.
+- **Lead/body executor = swappable**: `codex` (default), `sonnet`, or `opus`. Opus support is for the
+  reverse-advisor shape where Opus is the lead and Fable remains the on-demand advisor.
 
 **Council revisions (from `/esat-fleet`: Claude critic + Grok consensus) — baked in:**
 1. **Deterministic verifier, not a prose GREEN.** The Stop gate must validate a machine-readable
@@ -50,7 +52,7 @@ Confirmed decisions:
 ```
 /fablefuse  (skill primes Fable + arms guards)
 Fable (in-session brain) ── plans, decides width, verifies vs raw diffs+stdout, synthesizes
-   ├─ fable-dispatch "task"                 → 1 Codex-5.5-high body
+   ├─ fable-dispatch "task"                 → 1 selected body/lead executor
    ├─ fable-dispatch --parallel "t1" "t2"…  → N concurrent bodies (budget/dry-run/concurrency caps)
    │     each body → raw transcript artifact; only a bounded summary card returns
    ├─ fable-dispatch verify --gate "pytest -q"   → runs the EXTERNAL gate, writes verdict.json
@@ -60,7 +62,7 @@ Fable (in-session brain) ── plans, decides width, verifies vs raw diffs+stdo
 Narrowed hard gate (per-session marker; kill-switch FABLE_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1):
    PreToolUse → if armed: block Write/Edit/MultiEdit/NotebookEdit + non-allowlisted mutating Bash
                 (allow fable-dispatch/codex + read-only inspectors + git status/diff/log);
-                trivial-edit escape hatch; message: "delegate execution to Codex"
+                trivial-edit escape hatch; message: "delegate execution to the selected body"
    Stop       → if armed: block finish unless verdict.json result==GREEN AND ts >= last_dispatch_ts
                 (inclusive: a verdict stamped in the same instant as the last dispatch still
                 counts as fresh — verify always runs strictly after dispatch completes in
@@ -74,7 +76,7 @@ Narrowed hard gate (per-session marker; kill-switch FABLE_GUARDS_OFF=1 / CLAUDE_
 | `README.md`, `LICENSE` (MIT), `CLAUDE.md`, `.gitignore`, `NOTICE` | OSS scaffold + attribution |
 | `docs/DESIGN.md` | this design (moved in) |
 | `skills/fablefuse/SKILL.md` | brain/body operating manual + triggers (`/fablefuse`, "fablefuse", "fable fuse") |
-| `fable_dispatch.py` | body-caller: single + parallel Codex, toggles/config, artifact capture + bounded cards, `arm`/`disarm`/`verify`/`config`/`doctor`/`install-hooks` subcommands. Importable (underscore) for tests. |
+| `fable_dispatch.py` | body-caller: single + parallel selected executors, toggles/config, artifact capture + bounded cards, `arm`/`disarm`/`verify`/`config`/`doctor`/`install-hooks` subcommands. Importable (underscore) for tests. |
 | `bin/fable-dispatch` | executable shim → `python3 fable_dispatch.py "$@"` |
 | `fable_verify.py` | deterministic gate runner (copied/adapted from `fleet_verify.py`): runs the acceptance command, records exit code + changed-file diff sha → `verdict.json` |
 | `fable_scrub.py` | copied `fleet_scrub.py` (optional redaction; Codex is first-party/local → off by default) |
@@ -97,7 +99,7 @@ Narrowed hard gate (per-session marker; kill-switch FABLE_GUARDS_OFF=1 / CLAUDE_
   a reminder instead. `fable-dispatch config [--model … --effort … --fast …]` prints/persists;
   effective config is echoed in the `🔁 LOOP` status line.
 
-**Dispatch**: single = one Codex body; `--parallel`/`--fanout` = `ThreadPoolExecutor` capped by
+**Dispatch**: single = one selected body; `--parallel`/`--fanout` = `ThreadPoolExecutor` capped by
 `FABLE_MAX_PARALLEL` (default 4), `--dry-run` and `--budget-usd` supported (copied governance). Each
 worker → `runs/fable-<runid>/worker-<i>.md` + sha256; returns a bounded card
 (`FABLE_MAX_RETURN_CHARS`, default 1800). Codex first-party → no scrub by default.
@@ -113,7 +115,7 @@ that file — a prose "GREEN" alone can never close the loop.
 `~/.config/fable-fuse/state/<session>.json` (tracks `armed`, `last_dispatch_ts`, `verdict`).
 
 **SKILL doctrine**: arm → you are the brain, never mutate/execute directly, delegate every
-execution/research/tool/MCP task to Codex; single for coherent jobs, `--parallel` for independent
+execution/research/tool/MCP task to the selected body; single for coherent jobs, `--parallel` for independent
 chunks; route effort by difficulty; read summary cards, open raw artifacts to verify; run a real
 gate (`verify --gate …`) and confirm against raw diff+stdout; loop on RED with fix notes; only then
 is GREEN stamped and `done`. Lead replies with the `🔁 LOOP · fablefuse · …` status line.
@@ -131,15 +133,14 @@ Offline (keyless, CI-safe — `FABLE_CODEX_CMD=echo`-style dummy so no real Code
 - Gate smoke: pipe fake PreToolUse JSON (armed, `tool_name=Write`) into `hooks/fable_gate.py` →
   expect block; unarmed → allow.
 
-Live smoke (user-initiated, one real call): `fable-dispatch "print hello world and stop"` → Codex
+Live smoke (user-initiated, one real call): `fable-dispatch "print hello world and stop"` → selected body
 body runs, artifact + card land in `runs/`. End-to-end: `/fablefuse` → small goal → gate blocks a
-direct Write, Codex does the edit, `verify --gate` passes, Stop unblocks on GREEN.
+direct Write, the selected body does the edit, `verify --gate` passes, Stop unblocks on GREEN.
 
 ## Boundaries
 - New repo only; FleetFuse repo untouched; no commits pushed / no GitHub remote / not made public
   without explicit human go.
 - Guards opt-in (armed only by `/fablefuse`), session-scoped, kill-switchable, reversible installer.
-- Honest limits in README: FableFuse coordinates a Codex body and preserves deterministic
-  verification artifacts; Codex output correctness is still the user's responsibility; requires a
-  logged-in Codex CLI (any current model — no version is pinned by default) and a Fable-capable
-  Claude Code session.
+- Honest limits in README: FableFuse coordinates a selected body/lead executor and preserves deterministic
+  verification artifacts; body output correctness is still the user's responsibility; requires the
+  selected body CLI (Codex or Claude) and a Fable-capable Claude Code session.

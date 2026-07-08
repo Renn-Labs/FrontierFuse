@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import fable_common as fc  # noqa: E402
+import fable_advisor  # noqa: E402
 
 SLACK = 120  # truncation marker headroom beyond MAX_RETURN_CHARS
 
@@ -190,6 +191,7 @@ def test_build_body_command_executor() -> None:
     old_cmd = _env("FABLE_CODEX_CMD", None)      # unset echo so codex builds a real command
     old_body = _env("FABLE_BODY_CMD", None)
     old_exec = _env("FABLE_EXECUTOR", None)
+    old_opus = _env("FABLE_OPUS_CMD", None)
     try:
         codex_cfg = fc.resolve_config(overrides={"executor": "codex"})
         assert fc.build_body_command(codex_cfg)[0] == "codex"
@@ -197,13 +199,34 @@ def test_build_body_command_executor() -> None:
         sonnet_cfg = fc.resolve_config(overrides={"executor": "sonnet", "sonnet_model": "claude-sonnet-5"})
         assert fc.build_body_command(sonnet_cfg) == ["claude", "-p", "--model", "claude-sonnet-5"]
 
+        opus_cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-5"})
+        assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-5"]
+        assert fc.build_fable_command(opus_cfg) == ["echo"]
+
+        os.environ["FABLE_OPUS_CMD"] = "opus-runner --flag"
+        assert fc.build_body_command(opus_cfg) == ["opus-runner", "--flag"]
+        os.environ.pop("FABLE_OPUS_CMD", None)
+
         os.environ["FABLE_BODY_CMD"] = "my-runner --flag"      # universal override wins
         assert fc.build_body_command(codex_cfg) == ["my-runner", "--flag"]
+        assert fc.build_body_command(opus_cfg) == ["my-runner", "--flag"]
     finally:
         _restore("FABLE_CODEX_CMD", old_cmd)
         _restore("FABLE_BODY_CMD", old_body)
         _restore("FABLE_EXECUTOR", old_exec)
+        _restore("FABLE_OPUS_CMD", old_opus)
         os.environ["FABLE_CODEX_CMD"] = "echo"
+
+
+def test_advisor_prompt_uses_selected_opus_lead() -> None:
+    cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-5"})
+    prompt = fable_advisor._build_advisor_prompt(
+        "How should the lead route this refactor?",
+        "",
+        fable_advisor._lead_description(cfg),
+    )
+    assert "Opus (claude-opus-5) is the EXECUTOR/LEAD" in prompt
+    assert "Your role is ADVISOR ONLY" in prompt
 
 
 def test_make_verdict_and_fresh_green() -> None:
@@ -398,6 +421,35 @@ def test_session_id_defaults_to_claude_code_session_id() -> None:
         fc.clear_state("default")
 
 
+def test_dispatch_config_accepts_opus_executor() -> None:
+    """Reverse-advisor lead selection: Opus can be the lead/body executor while
+    the Fable advisor command remains independently configured."""
+    sid = "contract-opus-executor"
+    fc.clear_state(sid)
+    try:
+        proc = _run_dispatch(
+            ["config", "--executor", "opus", "--opus-model", "claude-opus-5"],
+            extra_env={"FABLE_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"config opus failed: {proc.stdout!r} {proc.stderr!r}"
+        cfg = json.loads(proc.stdout)
+        assert cfg["executor"] == "opus"
+        assert cfg["opus_model"] == "claude-opus-5"
+        assert cfg["fable_model"] == "claude-fable-5"
+
+        proc = _run_dispatch(
+            ["--dry-run", "--executor", "opus", "--opus-model", "claude-opus-5", "lead with Opus; ask Fable"],
+            extra_env={"FABLE_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"opus dry-run failed: {proc.stdout!r} {proc.stderr!r}"
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["executor"] == "opus"
+        assert payload["mode"]["opus_model"] == "claude-opus-5"
+        assert "claude -p --model claude-opus-5" in payload["cards"][0]["summary"]
+    finally:
+        fc.clear_state(sid)
+
+
 def test_cmd_done_refuses_without_fresh_green() -> None:
     """Regression: `done` must not disarm without a fresh GREEN verdict — otherwise the brain
     can always run the (Bash-allowlisted) `fable-dispatch done` to kill the gate on demand."""
@@ -456,6 +508,7 @@ def main() -> int:
         test_resolve_config_precedence,
         test_build_codex_command_fast_swaps_effort,
         test_build_body_command_executor,
+        test_advisor_prompt_uses_selected_opus_lead,
         test_make_verdict_and_fresh_green,
         test_state_read_write_merge_clear,
         test_handoff_card_bounded_with_artifact,
@@ -464,6 +517,7 @@ def main() -> int:
         test_pretool_gate_blocks_bash_chaining,
         test_pretool_gate_allows_realistic_invocation_forms,
         test_session_id_defaults_to_claude_code_session_id,
+        test_dispatch_config_accepts_opus_executor,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,
     ]

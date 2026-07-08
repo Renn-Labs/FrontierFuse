@@ -6,6 +6,13 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-08
+
+### Added
+- Opus can now be selected as the lead/body executor with `fable-dispatch config --executor opus`
+  and customized with `--opus-model` / `FABLE_OPUS_MODEL`, while Fable remains the advisor/brain
+  through the existing `FABLE_MODEL` path.
+
 ## [0.2.1] - 2026-07-08
 
 ### Added

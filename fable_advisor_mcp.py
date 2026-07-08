@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fable_advisor_mcp.py — stdio MCP server exposing `ask_fable`.
 
-This is the advisor-mode primitive: it lets a Codex (or any) executor main loop consult Fable 5
+This is the advisor-mode primitive: it lets a Codex/Sonnet/Opus (or any) executor main loop consult Fable 5
 ON-DEMAND. The executor runs every turn and does the work; it calls `ask_fable` only when guidance
 materially helps, so most tokens stay at the cheaper executor rate (the ClaudeDevs advisor pattern).
 
@@ -22,7 +22,7 @@ import fable_advisor
 PROTO = "2025-06-18"
 INSTRUCTIONS = (
     "Consult Fable 5 (the on-demand ADVISOR) for planning, hard design decisions, architecture "
-    "tradeoffs, and independent verification. YOU (the executor) run the main loop and do all the "
+    "tradeoffs, and independent verification. YOU (the selected lead/executor) run the main loop and do all the "
     "work — call ask_fable only when guidance materially helps, keeping most tokens at the cheaper "
     "executor rate. Fable advises; it does not execute."
 )

@@ -11,8 +11,9 @@ Include repro steps and impact. We aim to acknowledge within a few days.
 ## Scope & things to know
 
 - **The hard gate is a workflow guardrail, not a sandbox.** It steers an in-session brain away from
-  direct execution; it does not sandbox the body engine. The Codex body runs with `--yolo` by
-  default (it may run commands/tests). Only point it at repositories you trust, and review diffs.
+  direct execution; it does not sandbox the selected body/lead engine. The Codex body runs with
+  `--yolo` by default (it may run commands/tests), and Claude-CLI bodies have their own tool
+  permissions. Only point any lead/body executor at repositories you trust, and review diffs.
 - **Kill-switch:** `FABLE_GUARDS_OFF=1` (or `CLAUDE_GUARDS_OFF=1`) disables both hooks.
 - **No secrets in the repo.** FableFuse reads no API keys itself; the underlying `codex` / `claude`
   CLIs manage their own auth. Never commit keys, provider logs, generated `runs/`, or `verdict.json`.

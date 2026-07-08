@@ -5,18 +5,19 @@ FableFuse pairs two model roles:
   - BODY / EXECUTOR = Codex   (`codex exec -c model_reasoning_effort=high`, no pinned model —
                               Codex's own current account-aware default is used unless
                               FABLE_CODEX_MODEL / --model explicitly pins one)
+                     or Sonnet / Opus through the Claude CLI when selected.
   - BRAIN / ADVISOR = Fable 5 (`claude -p --model claude-fable-5`)
 
 Two control flows are built on this foundation:
-  - advisor  (default): the executor (Codex) is the main loop and consults Fable ON-DEMAND
+  - advisor  (default): the selected executor/lead is the main loop and consults Fable ON-DEMAND
                         via `ask_fable` (fable_advisor.py / fable_advisor_mcp.py).
-  - orchestrator      : Fable is the in-session main loop and dispatches Codex bodies
+  - orchestrator      : Fable is the in-session main loop and dispatches selected bodies
                         (fable_dispatch.py) behind a hard gate + deterministic verdict.
 
 This module owns everything shared so the two loops never drift:
   - config toggles + precedence (codex model/effort/fast, fable model)
   - per-session state file (arm marker, last_dispatch_ts, verdict, session config)
-  - Codex + Fable command builders and a single run_engine()
+  - body/lead + Fable command builders and a single run_engine()
   - artifact capture + bounded handoff cards (so N bodies never flood a brain's context)
   - the verdict schema + kill-switch helper
 
@@ -50,10 +51,11 @@ STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
 #   fast_effort   effort when fast=on    (default low)
 #   fast_model    optional lighter body model when fast=on (default "" -> keep codex_model)
 #   fable_model   advisor (brain) model  (default claude-fable-5)
-#   executor      body/driver engine     codex|sonnet|custom (default codex)
+#   executor      body/driver engine     codex|sonnet|opus|custom (default codex)
 #   sonnet_model  model when executor=sonnet (default claude-sonnet-5)
+#   opus_model    model when executor=opus   (default claude-opus-5)
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
-               "fable_model", "executor", "sonnet_model")
+               "fable_model", "executor", "sonnet_model", "opus_model")
 
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n", ""}
@@ -87,6 +89,7 @@ def defaults() -> dict:
         "fable_model": "claude-fable-5",
         "executor": "codex",
         "sonnet_model": "claude-sonnet-5",
+        "opus_model": "claude-opus-5",
     }
 
 
@@ -101,6 +104,7 @@ def _env_config() -> dict:
         "fable_model": "FABLE_MODEL",
         "executor": "FABLE_EXECUTOR",
         "sonnet_model": "FABLE_SONNET_MODEL",
+        "opus_model": "FABLE_OPUS_MODEL",
     }
     for key, env in m.items():
         v = os.environ.get(env)
@@ -256,25 +260,36 @@ def build_fable_command(cfg: dict) -> list[str]:
 
 
 def build_sonnet_command(cfg: dict) -> list[str]:
-    """Build the Sonnet BODY command (executor=sonnet — the tweet's own executor). Override with FABLE_SONNET_CMD."""
+    """Build the Sonnet lead/body command. Override with FABLE_SONNET_CMD."""
     override = os.environ.get("FABLE_SONNET_CMD")
     if override:
         return shlex.split(override)
     return ["claude", "-p", "--model", cfg.get("sonnet_model") or "claude-sonnet-5"]
 
 
+def build_opus_command(cfg: dict) -> list[str]:
+    """Build the Opus lead/body command for reverse-advisor mode. Override with FABLE_OPUS_CMD."""
+    override = os.environ.get("FABLE_OPUS_CMD")
+    if override:
+        return shlex.split(override)
+    return ["claude", "-p", "--model", cfg.get("opus_model") or "claude-opus-5"]
+
+
 def build_body_command(cfg: dict) -> list[str]:
-    """Build the BODY/EXECUTOR command for the selected engine (cfg['executor'] = codex|sonnet).
+    """Build the BODY/EXECUTOR command for the selected engine (cfg['executor'] = codex|sonnet|opus).
 
     Universal override: FABLE_BODY_CMD / FABLE_EXECUTOR_CMD. Per-engine overrides:
-    FABLE_CODEX_CMD / FABLE_SONNET_CMD. This is the canonical body command; fable_dispatch
+    FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD. This is the canonical body command; fable_dispatch
     uses it so the executor is swappable per-session and permanently via config.
     """
     override = os.environ.get("FABLE_BODY_CMD") or os.environ.get("FABLE_EXECUTOR_CMD")
     if override:
         return shlex.split(override)
-    if (cfg.get("executor") or "codex").lower() == "sonnet":
+    executor = (cfg.get("executor") or "codex").lower()
+    if executor == "sonnet":
         return build_sonnet_command(cfg)
+    if executor == "opus":
+        return build_opus_command(cfg)
     return build_codex_command(cfg)
 
 

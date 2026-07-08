@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fable_advisor.py — advisor-mode core for FableFuse.
 
-In advisor mode (default), Codex 5.5-high is the main loop and consults Fable ON-DEMAND
+In advisor mode (default), the selected lead/executor is the main loop and consults Fable ON-DEMAND
 via ``ask_fable``. Fable gives concise, actionable guidance; the executor does the work.
 
 stdlib-only, Python 3.10+, importable for offline contract tests.
@@ -20,11 +20,20 @@ import fable_common as fc
 _ADVICE_WHOLE_LIMIT = int(os.environ.get("FABLE_ADVICE_WHOLE_LIMIT", str(fc.MAX_RETURN_CHARS * 8)))
 
 
-def _build_advisor_prompt(question: str, context: str) -> str:
+def _lead_description(cfg: dict) -> str:
+    executor = (cfg.get("executor") or "codex").lower()
+    if executor == "opus":
+        return f"Opus ({cfg.get('opus_model') or 'claude-opus-5'})"
+    if executor == "sonnet":
+        return f"Sonnet ({cfg.get('sonnet_model') or 'claude-sonnet-5'})"
+    return "Codex"
+
+
+def _build_advisor_prompt(question: str, context: str, lead: str = "the selected executor/lead") -> str:
     """Frame Fable as an on-demand advisor to an executor, not the worker."""
     parts = [
         "You are Fable, the ON-DEMAND ADVISOR in a FableFuse session.",
-        "Codex 5.5-high is the EXECUTOR (BODY) — it performs all implementation, tool use, and execution.",
+        f"{lead} is the EXECUTOR/LEAD (BODY) — it performs all implementation, tool use, and execution.",
         "Your role is ADVISOR ONLY: give concise, actionable guidance so the executor can succeed.",
         "Do NOT do the work yourself. Do NOT produce full implementations unless a tiny snippet clarifies.",
         "Prefer: decision rationale, risks, next steps, verification hints, and what to avoid.",
@@ -58,7 +67,7 @@ def ask_fable(
     """Consult Fable on-demand. Returns {ok, advice, model, note}."""
     cfg = fc.resolve_config(session_id=session_id)
     cmd = fc.build_fable_command(cfg)
-    prompt = _build_advisor_prompt(question, context)
+    prompt = _build_advisor_prompt(question, context, _lead_description(cfg))
     rc, stdout, stderr = fc.run_engine(cmd, prompt, timeout=timeout)
 
     if rc == 0:

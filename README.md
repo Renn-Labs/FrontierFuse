@@ -1,9 +1,9 @@
 # FableFuse
 
-**Fable 5 (brain) + Codex 5.5-high (body), fused into one Claude Code workflow.**
+**Fable 5 (brain/advisor) + a swappable lead/body model, fused into one Claude Code workflow.**
 
-FableFuse pairs a frontier *advisor/planner* model (Claude **Fable 5**) with a fast *executor*
-(**Codex 5.5-high**, or **Sonnet 5**) and gives you two ways to run them — the cost-optimal
+FableFuse pairs a frontier *advisor/planner* model (Claude **Fable 5**) with a swappable
+**executor/lead** (**Codex 5.5-high**, **Sonnet 5**, or **Opus 5**) and gives you two ways to run them — the cost-optimal
 **advisor** pattern by default, and a hard-gated **orchestrator** loop when you want enforced
 separation. It ships as a Claude Code plugin: a skill, a thin dispatch helper, and two hooks.
 
@@ -20,7 +20,7 @@ of FleetFuse's small helpers so it stands alone (see `NOTICE`).
 
 | Mode | Main loop (runs every turn) | Fable's role | Cost profile |
 |-|-|-|
-| **advisor** (default) | the **executor** (Codex 5.5-high or Sonnet 5) | on-demand consultant via `ask_fable` | most tokens at the cheaper executor rate |
+| **advisor** (default) | the **executor/lead** (Codex 5.5-high, Sonnet 5, or Opus 5) | on-demand consultant via `ask_fable` | most tokens at the lead rate |
 | **orchestrator** | **Fable** (in-session brain) | plans, routes, verifies, synthesizes | Fable tokens + bounded body cards |
 
 The advisor pattern is the one Anthropic's ClaudeDevs describe: *an executor calls Fable for
@@ -30,7 +30,7 @@ guidance; most tokens are billed at the lower executor rate.*
 advisor (default)                         orchestrator
   Executor ── main loop, every turn         Fable ── main loop (brain)
      │  ↑ ask_fable(question)                  │  ↓ fable-dispatch "<spec>"
-     │  ↓ advice                             Codex/Sonnet body ── executes
+     │  ↓ advice                             Codex/Sonnet/Opus body ── executes
   Fable ── on-demand advisor                  │  ↑ bounded card + raw artifact
                                             Fable verifies vs raw diff + gate stdout
                                               └─ hard gate blocks direct mutation until GREEN
@@ -63,13 +63,40 @@ That's it — `/fablefuse` and `/fablefuse-config` are now available, and the or
 gate is registered (still **inert** until you run `fable-dispatch arm`; honours
 `FABLE_GUARDS_OFF=1`/`CLAUDE_GUARDS_OFF=1`).
 
+**Upgrade an existing install:**
+
+```
+/plugin marketplace add Renn-Labs/FableFuse
+/plugin install fablefuse@fablefuse
+/reload-plugins
+```
+
+After upgrading to `0.2.2`, `fable-dispatch config --executor opus` selects Opus as the lead/body
+executor while Fable remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
+
 **Developing/testing locally**, before or without publishing to a marketplace:
 
 ```bash
 git clone https://github.com/Renn-Labs/FableFuse.git && cd FableFuse
+git config core.hooksPath githooks
 claude plugin validate .        # manifest schema check
 claude --plugin-dir .            # load it for this session only, no marketplace needed
 # after editing hooks/skills: /reload-plugins inside the session picks up changes, no restart
+```
+
+The tracked pre-push hook runs `scripts/pre-push-check.sh` before public branch pushes. It checks the
+version bump, changelog, install docs, CI branch coverage, public scrub candidates, generated-file
+hygiene, compile, offline contracts, plugin validation, and an Opus-lead dry-run. Run it manually
+with:
+
+```bash
+scripts/pre-push-check.sh
+```
+
+Before first public exposure, also run the full-history scrub gate:
+
+```bash
+scripts/public-release-scrub.py --all-history
 ```
 
 **Option B — manual install (no marketplace, e.g. hardened/offline environments):**
@@ -87,19 +114,21 @@ path (if any) is active.
 
 ## Advisor mode (default)
 
-Run your executor as usual; consult Fable only for the hard calls.
+Run your executor/lead as usual; consult Fable only for the hard calls. For a reverse-advisor setup
+where **Opus is the lead** and Fable is the specialist advisor, select Opus as the executor:
 
 ```bash
 ask-fable "Is an outbox pattern overkill here, or the right call?"      # CLI
-# or register the on-demand tool with a Codex executor:
+# or register the on-demand tool with a compatible executor (Codex shown):
 codex mcp add fable-advisor -- python3 "$PWD/fable_advisor_mcp.py"      # exposes ask_fable
+fable-dispatch config --executor opus                                   # Opus lead + Fable advisor
 ```
 
 ## Orchestrator mode
 
 ```bash
 fable-dispatch arm
-fable-dispatch config --executor codex --effort high        # or --executor sonnet
+fable-dispatch config --executor codex --effort high        # or --executor sonnet|opus
 fable-dispatch "Implement X per spec: files, constraints, non-goals, and the exact test command"
 fable-dispatch verify --gate "pytest -q"                    # deterministic: GREEN iff exit 0
 # RED → dispatch fixes with concrete failure notes → verify again
@@ -119,16 +148,17 @@ config …`, or permanently with `--global`. Either way, a change takes effect o
 
 | toggle | env | default | purpose |
 |-|-|-|
-| `--executor` | `FABLE_EXECUTOR` | `codex` | body/driver engine: `codex` \| `sonnet` |
+| `--executor` | `FABLE_EXECUTOR` | `codex` | body/driver/lead engine: `codex` \| `sonnet` \| `opus` |
 | `--model` | `FABLE_CODEX_MODEL` | *(unset)* | pin a specific Codex body model; unset = Codex CLI's own current default |
 | `--effort` | `FABLE_CODEX_EFFORT` | `high` | Codex reasoning effort |
 | `--fast on\|off` | `FABLE_CODEX_FAST` | `off` | speed preset → `FABLE_CODEX_FAST_EFFORT` (`low`) |
 | `--sonnet-model` | `FABLE_SONNET_MODEL` | `claude-sonnet-5` | model when `executor=sonnet` |
+| `--opus-model` | `FABLE_OPUS_MODEL` | `claude-opus-5` | model when `executor=opus` |
 | — | `FABLE_MODEL` | `claude-fable-5` | Fable advisor/brain model |
 | — | `FABLE_CODEX_YOLO` | `1` | let the Codex body run commands/tests (`--yolo`) |
 
-Whole-command overrides: `FABLE_BODY_CMD` / `FABLE_EXECUTOR_CMD` (body), `FABLE_CODEX_CMD`,
-`FABLE_SONNET_CMD`, `FABLE_ADVISOR_CMD` (brain).
+Whole-command overrides: `FABLE_BODY_CMD` / `FABLE_EXECUTOR_CMD` (body/lead), `FABLE_CODEX_CMD`,
+`FABLE_SONNET_CMD`, `FABLE_OPUS_CMD`, `FABLE_ADVISOR_CMD` (Fable advisor/brain).
 
 ## Staying current on model names
 
@@ -144,8 +174,9 @@ the exact command that will be run (including any pinned model) without making a
 
 ## How it works (design in one screen)
 
-- **Body invocation** follows steipete's proven `codex-first` pattern: `codex exec --yolo
-  -c model_reasoning_effort=<e>`, prompt fed on **stdin** (robust for large specs), stderr dropped.
+- **Body invocation** uses the selected executor. Codex follows steipete's proven `codex-first`
+  pattern: `codex exec --yolo -c model_reasoning_effort=<e>`, prompt fed on **stdin** (robust for
+  large specs). Sonnet/Opus use `claude -p --model <model>`.
 - **Deterministic verdict** — the loop can only close on a real external gate. `verify --gate "<cmd>"`
   runs the command, records its **exit code** + a `git diff` sha into `verdict.json`; GREEN iff exit
   0. A prose "looks good" from the brain never closes the loop.
@@ -160,9 +191,10 @@ the exact command that will be run (including any pinned model) without making a
 
 FableFuse coordinates a body engine and preserves deterministic verification artifacts. It does
 **not** guarantee model output is correct, safe, or complete — bodies can fabricate, miss bugs, and
-consume provider quota. You are responsible for the review. Live runs need a logged-in **Codex CLI**
-(any current model — see "Staying current" above) and a **`claude` CLI** with a Fable-capable
-model. Offline tests, dry-runs, and the doctor work with neither.
+consume provider quota. You are responsible for the review. Live runs need the selected body CLI
+(**Codex CLI** for `executor=codex`, **`claude` CLI** for `executor=sonnet|opus`) and a **`claude`
+CLI** with a Fable-capable model for advisor/brain calls. Offline tests, dry-runs, and the doctor
+work with neither.
 
 ## Credits
 

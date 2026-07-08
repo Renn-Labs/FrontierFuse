@@ -192,7 +192,7 @@ if __name__ == "__main__":
     fake_aws = "AKIA" + "1234567890ABCDEF"
     fake_openai = "sk-proj-" + "abcdefghijklmnopqrstuvwxyz0123"
     samples = {
-        \"key\": \"use api_key=\" + fake_aws + \" and \" + fake_openai,
+        "key": "use api_key=" + fake_aws + " and " + fake_openai,
         "pii": "email me at jane.doe@acme.com from 10.0.0.4, ssn 123-45-6789",
         "clean": "refactor the retry loop to use exponential backoff",
     }
