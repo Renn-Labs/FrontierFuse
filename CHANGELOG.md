@@ -6,7 +6,7 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-07-08
+## [0.2.1] - 2026-07-08
 
 ### Added
 - **Real Claude Code plugin packaging**: `.claude-plugin/plugin.json` + a self-referential
