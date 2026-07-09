@@ -1,6 +1,6 @@
 {
   "name": "fablefuse",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus (lead/body/executor), fused into one Claude Code workflow. Advisor mode (default, cost-optimal) and orchestrator mode (hard-gated dispatch loop with a deterministic verdict).",
   "author": {
     "name": "Renn Labs"

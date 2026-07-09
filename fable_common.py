@@ -53,7 +53,7 @@ STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
 #   fable_model   advisor (brain) model  (default claude-fable-5)
 #   executor      body/driver engine     codex|sonnet|opus|custom (default codex)
 #   sonnet_model  model when executor=sonnet (default claude-sonnet-5)
-#   opus_model    model when executor=opus   (default claude-opus-5)
+#   opus_model    model when executor=opus   (default claude-opus-4-8)
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
                "fable_model", "executor", "sonnet_model", "opus_model")
 
@@ -89,7 +89,7 @@ def defaults() -> dict:
         "fable_model": "claude-fable-5",
         "executor": "codex",
         "sonnet_model": "claude-sonnet-5",
-        "opus_model": "claude-opus-5",
+        "opus_model": "claude-opus-4-8",
     }
 
 
@@ -272,7 +272,7 @@ def build_opus_command(cfg: dict) -> list[str]:
     override = os.environ.get("FABLE_OPUS_CMD")
     if override:
         return shlex.split(override)
-    return ["claude", "-p", "--model", cfg.get("opus_model") or "claude-opus-5"]
+    return ["claude", "-p", "--model", cfg.get("opus_model") or "claude-opus-4-8"]
 
 
 def build_body_command(cfg: dict) -> list[str]:

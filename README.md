@@ -3,7 +3,7 @@
 **Fable 5 (brain/advisor) + a swappable lead/body model, fused into one Claude Code workflow.**
 
 FableFuse pairs a frontier *advisor/planner* model (Claude **Fable 5**) with a swappable
-**executor/lead** (**Codex 5.5-high**, **Sonnet 5**, or **Opus 5**) and gives you two ways to run them — the cost-optimal
+**executor/lead** (**Codex 5.5-high**, **Sonnet 5**, or **Opus 4.8**) and gives you two ways to run them — the cost-optimal
 **advisor** pattern by default, and a hard-gated **orchestrator** loop when you want enforced
 separation. It ships as a Claude Code plugin: a skill, a thin dispatch helper, and two hooks.
 
@@ -20,7 +20,7 @@ of FleetFuse's small helpers so it stands alone (see `NOTICE`).
 
 | Mode | Main loop (runs every turn) | Fable's role | Cost profile |
 |-|-|-|
-| **advisor** (default) | the **executor/lead** (Codex 5.5-high, Sonnet 5, or Opus 5) | on-demand consultant via `ask_fable` | most tokens at the lead rate |
+| **advisor** (default) | the **executor/lead** (Codex 5.5-high, Sonnet 5, or Opus 4.8) | on-demand consultant via `ask_fable` | most tokens at the lead rate |
 | **orchestrator** | **Fable** (in-session brain) | plans, routes, verifies, synthesizes | Fable tokens + bounded body cards |
 
 The advisor pattern is the one Anthropic's ClaudeDevs describe: *an executor calls Fable for
@@ -71,8 +71,8 @@ gate is registered (still **inert** until you run `fable-dispatch arm`; honours
 /reload-plugins
 ```
 
-After upgrading to `0.2.3`, `fable-dispatch config --executor opus` selects Opus as the lead/body
-executor while Fable remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
+After upgrading to `0.2.4`, `fable-dispatch config --executor opus` selects Opus 4.8 as the
+lead/body executor while Fable remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
 
 **Developing/testing locally**, before or without publishing to a marketplace:
 
@@ -153,7 +153,7 @@ config …`, or permanently with `--global`. Either way, a change takes effect o
 | `--effort` | `FABLE_CODEX_EFFORT` | `high` | Codex reasoning effort |
 | `--fast on\|off` | `FABLE_CODEX_FAST` | `off` | speed preset → `FABLE_CODEX_FAST_EFFORT` (`low`) |
 | `--sonnet-model` | `FABLE_SONNET_MODEL` | `claude-sonnet-5` | model when `executor=sonnet` |
-| `--opus-model` | `FABLE_OPUS_MODEL` | `claude-opus-5` | model when `executor=opus` |
+| `--opus-model` | `FABLE_OPUS_MODEL` | `claude-opus-4-8` | model when `executor=opus` |
 | — | `FABLE_MODEL` | `claude-fable-5` | Fable advisor/brain model |
 | — | `FABLE_CODEX_YOLO` | `1` | let the Codex body run commands/tests (`--yolo`) |
 
@@ -171,6 +171,11 @@ defaults to. Pin a specific release only when you deliberately want to lock a ve
 what's current: [Codex models](https://developers.openai.com/codex/models) and the
 [Codex changelog](https://developers.openai.com/codex/changelog). `fable-dispatch doctor` reports
 the exact command that will be run (including any pinned model) without making a live call.
+
+Claude model names are also release-sensitive. Do not infer that a family number exists. The current
+Opus executor default is `claude-opus-4-8`, based on Anthropic's official models overview and Opus
+4.8 release notes. Check the official Anthropic model docs before changing any Claude default,
+README claim, skill text, or marketplace metadata.
 
 ## How it works (design in one screen)
 

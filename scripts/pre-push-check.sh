@@ -130,6 +130,17 @@ PY
 step "public release scrub"
 python3 scripts/public-release-scrub.py --push-range
 
+step "market model names"
+if git grep -n -E 'claude-opus-5|Opus 5' -- \
+  '*.py' '*.md' '*.json' '*.sh' \
+  ':!scripts/pre-push-check.sh' \
+  ':!CHANGELOG.md' >/tmp/fable-model-name-grep.$$; then
+  cat /tmp/fable-model-name-grep.$$ >&2
+  rm -f /tmp/fable-model-name-grep.$$
+  fail "found unverified Opus 5 references; current official Opus model is claude-opus-4-8"
+fi
+rm -f /tmp/fable-model-name-grep.$$
+
 step "whitespace"
 git diff --check
 
@@ -151,7 +162,7 @@ step "opus lead dry-run smoke"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 FABLE_CONFIG_DIR="$tmpdir/config" FABLE_STATE_DIR="$tmpdir/state" FABLE_RUNS_DIR="$tmpdir/runs" \
-  python3 fable_dispatch.py --dry-run --executor opus --opus-model claude-opus-5 \
+  python3 fable_dispatch.py --dry-run --executor opus --opus-model claude-opus-4-8 \
   "pre-push smoke: Opus lead with Fable advisor" >/dev/null
 
 step "doctor"

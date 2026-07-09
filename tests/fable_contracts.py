@@ -199,8 +199,8 @@ def test_build_body_command_executor() -> None:
         sonnet_cfg = fc.resolve_config(overrides={"executor": "sonnet", "sonnet_model": "claude-sonnet-5"})
         assert fc.build_body_command(sonnet_cfg) == ["claude", "-p", "--model", "claude-sonnet-5"]
 
-        opus_cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-5"})
-        assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-5"]
+        opus_cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-4-8"})
+        assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-4-8"]
         assert fc.build_fable_command(opus_cfg) == ["echo"]
 
         os.environ["FABLE_OPUS_CMD"] = "opus-runner --flag"
@@ -219,13 +219,13 @@ def test_build_body_command_executor() -> None:
 
 
 def test_advisor_prompt_uses_selected_opus_lead() -> None:
-    cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-5"})
+    cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-4-8"})
     prompt = fable_advisor._build_advisor_prompt(
         "How should the lead route this refactor?",
         "",
         fable_advisor._lead_description(cfg),
     )
-    assert "Opus (claude-opus-5) is the EXECUTOR/LEAD" in prompt
+    assert "Opus (claude-opus-4-8) is the EXECUTOR/LEAD" in prompt
     assert "Your role is ADVISOR ONLY" in prompt
 
 
@@ -428,24 +428,24 @@ def test_dispatch_config_accepts_opus_executor() -> None:
     fc.clear_state(sid)
     try:
         proc = _run_dispatch(
-            ["config", "--executor", "opus", "--opus-model", "claude-opus-5"],
+            ["config", "--executor", "opus", "--opus-model", "claude-opus-4-8"],
             extra_env={"FABLE_SESSION_ID": sid},
         )
         assert proc.returncode == 0, f"config opus failed: {proc.stdout!r} {proc.stderr!r}"
         cfg = json.loads(proc.stdout)
         assert cfg["executor"] == "opus"
-        assert cfg["opus_model"] == "claude-opus-5"
+        assert cfg["opus_model"] == "claude-opus-4-8"
         assert cfg["fable_model"] == "claude-fable-5"
 
         proc = _run_dispatch(
-            ["--dry-run", "--executor", "opus", "--opus-model", "claude-opus-5", "lead with Opus; ask Fable"],
+            ["--dry-run", "--executor", "opus", "--opus-model", "claude-opus-4-8", "lead with Opus; ask Fable"],
             extra_env={"FABLE_SESSION_ID": sid},
         )
         assert proc.returncode == 0, f"opus dry-run failed: {proc.stdout!r} {proc.stderr!r}"
         payload = json.loads(proc.stdout)
         assert payload["mode"]["executor"] == "opus"
-        assert payload["mode"]["opus_model"] == "claude-opus-5"
-        assert "claude -p --model claude-opus-5" in payload["cards"][0]["summary"]
+        assert payload["mode"]["opus_model"] == "claude-opus-4-8"
+        assert "claude -p --model claude-opus-4-8" in payload["cards"][0]["summary"]
     finally:
         fc.clear_state(sid)
 

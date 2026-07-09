@@ -23,7 +23,7 @@ _ADVICE_WHOLE_LIMIT = int(os.environ.get("FABLE_ADVICE_WHOLE_LIMIT", str(fc.MAX_
 def _lead_description(cfg: dict) -> str:
     executor = (cfg.get("executor") or "codex").lower()
     if executor == "opus":
-        return f"Opus ({cfg.get('opus_model') or 'claude-opus-5'})"
+        return f"Opus ({cfg.get('opus_model') or 'claude-opus-4-8'})"
     if executor == "sonnet":
         return f"Sonnet ({cfg.get('sonnet_model') or 'claude-sonnet-5'})"
     return "Codex"

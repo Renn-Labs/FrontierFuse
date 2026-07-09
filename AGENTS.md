@@ -19,5 +19,12 @@ Before any public push, release, tag, plugin marketplace update, or repo-publica
 6. If a real secret is found, stop release work, rotate/revoke the secret, scrub local history before
    pushing, and document only the remediation status.
 
+## Market Model Accuracy
+
+Before changing default model IDs, README claims, skill text, marketplace metadata, or examples for
+current provider models, verify the exact model IDs against official provider documentation. Do not
+infer unreleased family names. As of the `0.2.4` correction, Opus means `claude-opus-4-8`; do not
+write an Opus major-version model ID unless official Anthropic docs list it.
+
 Pushing, tagging, publishing packages, making the repo public, or adding live-provider CI remains a
 maintainer-gated action.

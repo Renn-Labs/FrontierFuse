@@ -28,7 +28,7 @@ back.
 2. **Ask, via `AskUserQuestion`, in one batch:**
    - **Scope** — "This session only" (default) vs. "Permanently (all future sessions)". Maps to
      omitting vs. passing `--global`.
-   - **Executor/lead** — "Codex (default)" vs. "Sonnet 5" vs. "Opus 5". Maps to `--executor codex|sonnet|opus`.
+   - **Executor/lead** — "Codex (default)" vs. "Sonnet 5" vs. "Opus 4.8". Maps to `--executor codex|sonnet|opus`.
    - **Effort** — "high (default)" / "medium" / "low". Maps to `--effort`.
    - **Fast mode** — "off (default)" vs. "on (lower effort, quicker/cheaper bodies)". Maps to
      `--fast on|off`.

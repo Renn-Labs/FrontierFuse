@@ -10,8 +10,8 @@
       "name": "fablefuse",
       "source": "./",
       "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus (lead/body/executor), fused into one Claude Code workflow.",
-      "version": "0.2.3"
+      "version": "0.2.4"
     }
   ],
-  "version": "0.2.3"
+  "version": "0.2.4"
 }

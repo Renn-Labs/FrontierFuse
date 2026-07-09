@@ -6,6 +6,14 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-09
+
+### Fixed
+- Corrected the Opus executor default from the non-existent `claude-opus-5` to the current official
+  `claude-opus-4-8` model ID.
+- Added a release-gate check that blocks unverified Opus 5 references from re-entering shipped code,
+  docs, tests, or plugin metadata.
+
 ## [0.2.3] - 2026-07-08
 
 ### Fixed

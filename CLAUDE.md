@@ -2,7 +2,7 @@
 
 FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **lead/
 body/executor** (**Codex** by default — no model version pinned, see README "Staying current on model
-names" — or **Sonnet 5** / **Opus 5** through the Claude CLI). Keep changes aligned with the core
+names" — or **Sonnet 5** / **Opus 4.8** through the Claude CLI). Keep changes aligned with the core
 promise: two selectable control flows (advisor default, orchestrator), a **deterministic** verify
 gate, a narrowed & kill-switchable hard gate, pluggable executor, and local-first setup — all
 stdlib-only and offline-testable.
@@ -43,6 +43,9 @@ stdlib-only and offline-testable.
   trivial-edit escape and kill-switch.
 - **Body invocation** stays on the proven pattern (`codex exec --yolo -c model_reasoning_effort=<e>`,
   prompt on stdin). Keep it overridable via `FABLE_*_CMD`.
+- **Market model names must be verified against official provider docs before shipping.** Do not
+  infer unreleased family names. As of the `0.2.4` correction, Opus means `claude-opus-4-8`; do not
+  write an Opus major-version model ID unless official Anthropic docs list it.
 
 ## Verification
 

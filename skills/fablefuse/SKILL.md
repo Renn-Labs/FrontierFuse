@@ -26,12 +26,12 @@ Pair **Fable 5** (brain/advisor) with a swappable **Codex/Sonnet/Opus** lead/bod
 
 | Mode | Main loop | Fable role | Lead/body role | Cost profile |
 |------|-----------|------------|------------|--------------|
-| **advisor** (default) | Executor/lead (Codex 5.5-high, Sonnet 5, Opus 5, or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at lead/executor rate |
+| **advisor** (default) | Executor/lead (Codex 5.5-high, Sonnet 5, Opus 4.8, or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at lead/executor rate |
 | **orchestrator** | Fable (in-session brain) | Plans, routes, verifies, synthesizes | Dispatched bodies only | Fable tokens + bounded body cards |
 
 **Default to advisor** unless the user says orchestrator, `/fablefuse orchestrator`, or wants hard-gated delegation.
 
-**Executor** (the lead/body/driver) is swappable: `codex` (Codex 5.5-high, default), `sonnet` (Sonnet 5), or `opus` (Opus 5).
+**Executor** (the lead/body/driver) is swappable: `codex` (Codex 5.5-high, default), `sonnet` (Sonnet 5), or `opus` (Opus 4.8).
 Set per-session or permanently: `fable-dispatch config --executor codex|sonnet|opus [--global]`.
 
 ---
