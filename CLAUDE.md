@@ -1,8 +1,9 @@
 # FableFuse Agent Guidance
 
 FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **lead/
-body/executor** (**Codex** by default — no model version pinned, see README "Staying current on model
-names" — or **Sonnet 5** / **Opus 4.8** through the Claude CLI). Keep changes aligned with the core
+body/executor**: **Codex** by default (no model version pinned, see README "Staying current on model
+names"), **Sonnet 5** / **Opus 4.8** through the Claude CLI, or **Grok 4.5** through Grok Build CLI.
+Keep changes aligned with the core
 promise: two selectable control flows (advisor default, orchestrator), a **deterministic** verify
 gate, a narrowed & kill-switchable hard gate, pluggable executor, and local-first setup — all
 stdlib-only and offline-testable.
@@ -10,7 +11,7 @@ stdlib-only and offline-testable.
 ## Architecture (don't drift from this)
 
 - `fable_common.py` — the shared contract: config toggles + precedence, per-session state, verdict
-  schema, command builders (`build_body_command` dispatches on `executor=codex|sonnet|opus`), artifact/handoff-card
+  schema, command builders (`build_body_command` dispatches on `executor=codex|sonnet|opus|grok`), artifact/handoff-card
   helpers, kill-switch. Everything imports it; don't fork its logic.
 - `fable_advisor.py` / `fable_advisor_mcp.py` — advisor mode (`ask_fable`): executor drives, Fable
   advises on-demand.
@@ -41,11 +42,14 @@ stdlib-only and offline-testable.
   A prose verdict must never be able to satisfy the Stop gate.
 - **The hard gate is narrowed** — mutation tools + a Bash allowlist, not a blanket block. Keep the
   trivial-edit escape and kill-switch.
-- **Body invocation** stays on the proven pattern (`codex exec --yolo -c model_reasoning_effort=<e>`,
-  prompt on stdin). Keep it overridable via `FABLE_*_CMD`.
+- **Body invocation** stays robust for large specs: Codex uses stdin (`codex exec --yolo -c
+  model_reasoning_effort=<e> -`), Grok uses `--prompt-file`, and all engines stay overridable via
+  `FABLE_*_CMD`.
 - **Market model names must be verified against official provider docs before shipping.** Do not
   infer unreleased family names. As of the `0.2.4` correction, Opus means `claude-opus-4-8`; do not
   write an Opus major-version model ID unless official Anthropic docs list it.
+  As of `0.2.5`, Grok means `grok-4.5` through the Grok Build CLI; verify xAI model IDs against
+  official xAI docs before changing defaults or claims.
 
 ## Verification
 

@@ -192,6 +192,10 @@ def test_build_body_command_executor() -> None:
     old_body = _env("FABLE_BODY_CMD", None)
     old_exec = _env("FABLE_EXECUTOR", None)
     old_opus = _env("FABLE_OPUS_CMD", None)
+    old_grok = _env("FABLE_GROK_CMD", None)
+    old_grok_yolo = _env("FABLE_GROK_YOLO", None)
+    old_grok_permission = _env("FABLE_GROK_PERMISSION_MODE", None)
+    old_grok_effort = _env("FABLE_GROK_EFFORT", None)
     try:
         codex_cfg = fc.resolve_config(overrides={"executor": "codex"})
         assert fc.build_body_command(codex_cfg)[0] == "codex"
@@ -203,18 +207,68 @@ def test_build_body_command_executor() -> None:
         assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-4-8"]
         assert fc.build_fable_command(opus_cfg) == ["echo"]
 
+        grok_cfg = fc.resolve_config(overrides={"executor": "grok", "grok_model": "grok-4.5"})
+        assert fc.build_body_command(grok_cfg) == [
+            "grok", "--model", "grok-4.5", "--reasoning-effort", "high",
+            "--permission-mode", "bypassPermissions", "--prompt-file", "{prompt_file}",
+        ]
+        final_cmd, stdin, cleanup = fc._prepare_prompt_command(
+            fc.build_body_command(grok_cfg), "hello from grok"
+        )
+        try:
+            assert stdin is None
+            assert "{prompt_file}" not in final_cmd
+            assert final_cmd[-2] == "--prompt-file"
+            assert Path(final_cmd[-1]).read_text() == "hello from grok"
+        finally:
+            for path in cleanup:
+                Path(path).unlink(missing_ok=True)
+
+        fast_grok_cfg = fc.resolve_config(overrides={
+            "executor": "grok", "grok_model": "grok-4.5", "grok_effort": "high",
+            "fast": True, "fast_effort": "low",
+        })
+        assert "--reasoning-effort" in fc.build_body_command(fast_grok_cfg)
+        assert fc.build_body_command(fast_grok_cfg)[
+            fc.build_body_command(fast_grok_cfg).index("--reasoning-effort") + 1
+        ] == "low"
+
+        os.environ["FABLE_GROK_EFFORT"] = "medium"
+        env_grok_cfg = fc.resolve_config(overrides={"executor": "grok", "grok_model": "grok-4.5"})
+        assert fc.build_body_command(env_grok_cfg)[
+            fc.build_body_command(env_grok_cfg).index("--reasoning-effort") + 1
+        ] == "medium"
+        os.environ.pop("FABLE_GROK_EFFORT", None)
+
+        os.environ["FABLE_GROK_YOLO"] = "0"
+        assert "--permission-mode" not in fc.build_body_command(grok_cfg)
+        os.environ["FABLE_GROK_PERMISSION_MODE"] = "auto"
+        auto_cmd = fc.build_body_command(grok_cfg)
+        assert auto_cmd[auto_cmd.index("--permission-mode") + 1] == "auto"
+        os.environ.pop("FABLE_GROK_YOLO", None)
+        os.environ.pop("FABLE_GROK_PERMISSION_MODE", None)
+
         os.environ["FABLE_OPUS_CMD"] = "opus-runner --flag"
         assert fc.build_body_command(opus_cfg) == ["opus-runner", "--flag"]
         os.environ.pop("FABLE_OPUS_CMD", None)
 
+        os.environ["FABLE_GROK_CMD"] = "grok-runner --flag"
+        assert fc.build_body_command(grok_cfg) == ["grok-runner", "--flag"]
+        os.environ.pop("FABLE_GROK_CMD", None)
+
         os.environ["FABLE_BODY_CMD"] = "my-runner --flag"      # universal override wins
         assert fc.build_body_command(codex_cfg) == ["my-runner", "--flag"]
         assert fc.build_body_command(opus_cfg) == ["my-runner", "--flag"]
+        assert fc.build_body_command(grok_cfg) == ["my-runner", "--flag"]
     finally:
         _restore("FABLE_CODEX_CMD", old_cmd)
         _restore("FABLE_BODY_CMD", old_body)
         _restore("FABLE_EXECUTOR", old_exec)
         _restore("FABLE_OPUS_CMD", old_opus)
+        _restore("FABLE_GROK_CMD", old_grok)
+        _restore("FABLE_GROK_YOLO", old_grok_yolo)
+        _restore("FABLE_GROK_PERMISSION_MODE", old_grok_permission)
+        _restore("FABLE_GROK_EFFORT", old_grok_effort)
         os.environ["FABLE_CODEX_CMD"] = "echo"
 
 
@@ -284,6 +338,21 @@ def test_handoff_card_bounded_with_artifact() -> None:
     assert artifact["sha256"]
     assert Path(card["artifact"]).is_file()
     assert len(card["summary"]) <= fc.MAX_RETURN_CHARS + SLACK
+
+
+def test_run_engine_cleans_prompt_file() -> None:
+    """Grok-style prompt files must be deleted after the body command returns."""
+    script = (
+        "import pathlib, sys; "
+        "p = pathlib.Path(sys.argv[1]); "
+        "print(p); "
+        "print(p.read_text())"
+    )
+    rc, out, err = fc.run_engine([sys.executable, "-c", script, "{prompt_file}"], "large grok spec")
+    assert rc == 0, f"prompt-file body failed: stdout={out!r} stderr={err!r}"
+    first_line = (out or "").splitlines()[0]
+    assert "large grok spec" in out
+    assert not Path(first_line).exists(), "managed prompt file must be removed after run_engine returns"
 
 
 def test_guards_off_honors_kill_switches() -> None:
@@ -450,6 +519,45 @@ def test_dispatch_config_accepts_opus_executor() -> None:
         fc.clear_state(sid)
 
 
+def test_dispatch_config_accepts_grok_executor() -> None:
+    """Grok Build can be the lead/body executor via the local grok CLI."""
+    sid = "contract-grok-executor"
+    fc.clear_state(sid)
+    try:
+        proc = _run_dispatch(
+            ["config", "--executor", "grok", "--grok-model", "grok-4.5", "--effort", "medium"],
+            extra_env={"FABLE_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"config grok failed: {proc.stdout!r} {proc.stderr!r}"
+        cfg = json.loads(proc.stdout)
+        assert cfg["executor"] == "grok"
+        assert cfg["grok_model"] == "grok-4.5"
+        assert cfg["grok_effort"] == "medium"
+        assert cfg["fable_model"] == "claude-fable-5"
+
+        proc = _run_dispatch(
+            ["--dry-run", "--executor", "grok", "--grok-model", "grok-4.5", "lead with Grok; ask Fable"],
+            extra_env={"FABLE_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"grok dry-run failed: {proc.stdout!r} {proc.stderr!r}"
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["executor"] == "grok"
+        assert payload["mode"]["grok_model"] == "grok-4.5"
+        assert "grok --model grok-4.5" in payload["cards"][0]["summary"]
+        assert "--reasoning-effort medium" in payload["cards"][0]["summary"]
+        assert "--prompt-file <prompt-file>" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            ["doctor"],
+            extra_env={"FABLE_SESSION_ID": sid, "FABLE_GROK_CMD": f"{sys.executable} -c pass"},
+        )
+        assert proc.returncode == 0, f"doctor grok override failed: {proc.stdout!r} {proc.stderr!r}"
+        assert "grok build CLI" in proc.stdout
+        assert sys.executable in proc.stdout
+    finally:
+        fc.clear_state(sid)
+
+
 def test_cmd_done_refuses_without_fresh_green() -> None:
     """Regression: `done` must not disarm without a fresh GREEN verdict — otherwise the brain
     can always run the (Bash-allowlisted) `fable-dispatch done` to kill the gate on demand."""
@@ -512,12 +620,14 @@ def main() -> int:
         test_make_verdict_and_fresh_green,
         test_state_read_write_merge_clear,
         test_handoff_card_bounded_with_artifact,
+        test_run_engine_cleans_prompt_file,
         test_guards_off_honors_kill_switches,
         test_pretool_gate_contracts,
         test_pretool_gate_blocks_bash_chaining,
         test_pretool_gate_allows_realistic_invocation_forms,
         test_session_id_defaults_to_claude_code_session_id,
         test_dispatch_config_accepts_opus_executor,
+        test_dispatch_config_accepts_grok_executor,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,
     ]

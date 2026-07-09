@@ -11,7 +11,7 @@ Subcommands:
   --fanout tasks.json          fan out tasks from a JSON list (strings or {"task": ...})
   arm | disarm | done          toggle the per-session hard-gate marker
   verify --gate "pytest -q"     run a deterministic acceptance gate -> verdict.json
-  config [--executor codex|sonnet|opus --model --sonnet-model --opus-model --effort --fast on|off --global]
+  config [--executor codex|sonnet|opus|grok --model --sonnet-model --opus-model --grok-model --effort --fast on|off --global]
                                 print/persist toggles
   doctor                       readiness table
   install-hooks | uninstall-hooks   reversible merge of the hooks into ~/.claude/settings.json
@@ -51,6 +51,7 @@ def _overrides(args) -> dict:
         ov["codex_model"] = args.model
     if args.effort:
         ov["codex_effort"] = args.effort
+        ov["grok_effort"] = args.effort
     if args.fast:
         ov["fast"] = (args.fast == "on")
     if getattr(args, "executor", None):
@@ -59,13 +60,22 @@ def _overrides(args) -> dict:
         ov["sonnet_model"] = args.sonnet_model
     if getattr(args, "opus_model", None):
         ov["opus_model"] = args.opus_model
+    if getattr(args, "grok_model", None):
+        ov["grok_model"] = args.grok_model
     return ov
 
 
 def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, dry: bool) -> dict:
     if dry:
+        display_cmd = cmd
+        suffix = f"  <<< {task[:80]}"
+        if any("{prompt_file}" in part for part in cmd):
+            display_cmd = [part.replace("{prompt_file}", "<prompt-file>") for part in cmd]
+        elif any("{prompt}" in part for part in cmd):
+            display_cmd, _stdin = fc._apply_prompt(cmd, task[:80])
+            suffix = ""
         return {"label": label, "ok": True, "note": "dry-run",
-                "task": task[:200], "summary": "[dry-run] " + " ".join(cmd) + f"  <<< {task[:80]}",
+                "task": task[:200], "summary": "[dry-run] " + " ".join(display_cmd) + suffix,
                 "artifact": "", "raw_sha256": "", "raw_bytes": 0}
     rc, out, err = fc.run_engine(cmd, task, timeout=timeout)
     text = out or err
@@ -164,6 +174,7 @@ def cmd_config(args) -> int:
         patch["codex_model"] = args.model
     if args.effort is not None:
         patch["codex_effort"] = args.effort
+        patch["grok_effort"] = args.effort
     if args.fast is not None:
         patch["fast"] = (args.fast == "on")
     if args.executor is not None:
@@ -172,6 +183,8 @@ def cmd_config(args) -> int:
         patch["sonnet_model"] = args.sonnet_model
     if args.opus_model is not None:
         patch["opus_model"] = args.opus_model
+    if args.grok_model is not None:
+        patch["grok_model"] = args.grok_model
     if patch:
         if args.glob:
             fc.save_global_config(patch)
@@ -212,8 +225,10 @@ def cmd_doctor(_args) -> int:
                        "not installed — run `/plugin marketplace add Renn-Labs/FableFuse` then "
                        "`/plugin install fablefuse@fablefuse` (or `install-hooks` for the manual path)")
 
+    grok_cmd = fc.build_grok_command(cfg)
     rows = [
         (f"{cfg['executor']} body CLI", bool(shutil.which(body_cmd[0])), " ".join(body_cmd)),
+        ("grok build CLI", bool(shutil.which(grok_cmd[0])), " ".join(grok_cmd)),
         ("fable brain CLI", bool(shutil.which(fable_cmd[0])), " ".join(fable_cmd)),
         ("plugin manifest", plugin_manifest_present, str(HERE / ".claude-plugin" / "plugin.json")),
         install_row,
@@ -324,10 +339,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", default=None, help="override codex body model for this run")
     ap.add_argument("--effort", choices=["low", "medium", "high"], default=None)
     ap.add_argument("--fast", choices=["on", "off"], default=None)
-    ap.add_argument("--executor", choices=["codex", "sonnet", "opus"], default=None,
-                    help="body/driver engine (codex, sonnet, or opus)")
+    ap.add_argument("--executor", choices=["codex", "sonnet", "opus", "grok"], default=None,
+                    help="body/driver engine (codex, sonnet, opus, or grok)")
     ap.add_argument("--sonnet-model", dest="sonnet_model", default=None)
     ap.add_argument("--opus-model", dest="opus_model", default=None)
+    ap.add_argument("--grok-model", dest="grok_model", default=None)
     ap.add_argument("--gate", default="", help="verify: acceptance command")
     ap.add_argument("--cwd", default=".", help="verify: working dir")
     ap.add_argument("--global", dest="glob", action="store_true", help="config: persist globally")

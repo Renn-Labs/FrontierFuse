@@ -3,7 +3,7 @@
 **Fable 5 (brain/advisor) + a swappable lead/body model, fused into one Claude Code workflow.**
 
 FableFuse pairs a frontier *advisor/planner* model (Claude **Fable 5**) with a swappable
-**executor/lead** (**Codex 5.5-high**, **Sonnet 5**, or **Opus 4.8**) and gives you two ways to run them — the cost-optimal
+**executor/lead** (**Codex 5.5-high**, **Sonnet 5**, **Opus 4.8**, or **Grok 4.5**) and gives you two ways to run them — the cost-optimal
 **advisor** pattern by default, and a hard-gated **orchestrator** loop when you want enforced
 separation. It ships as a Claude Code plugin: a skill, a thin dispatch helper, and two hooks.
 
@@ -20,7 +20,7 @@ of FleetFuse's small helpers so it stands alone (see `NOTICE`).
 
 | Mode | Main loop (runs every turn) | Fable's role | Cost profile |
 |-|-|-|
-| **advisor** (default) | the **executor/lead** (Codex 5.5-high, Sonnet 5, or Opus 4.8) | on-demand consultant via `ask_fable` | most tokens at the lead rate |
+| **advisor** (default) | the **executor/lead** (Codex 5.5-high, Sonnet 5, Opus 4.8, or Grok 4.5) | on-demand consultant via `ask_fable` | most tokens at the lead rate |
 | **orchestrator** | **Fable** (in-session brain) | plans, routes, verifies, synthesizes | Fable tokens + bounded body cards |
 
 The advisor pattern is the one Anthropic's ClaudeDevs describe: *an executor calls Fable for
@@ -30,7 +30,7 @@ guidance; most tokens are billed at the lower executor rate.*
 advisor (default)                         orchestrator
   Executor ── main loop, every turn         Fable ── main loop (brain)
      │  ↑ ask_fable(question)                  │  ↓ fable-dispatch "<spec>"
-     │  ↓ advice                             Codex/Sonnet/Opus body ── executes
+     │  ↓ advice                             Codex/Sonnet/Opus/Grok body ── executes
   Fable ── on-demand advisor                  │  ↑ bounded card + raw artifact
                                             Fable verifies vs raw diff + gate stdout
                                               └─ hard gate blocks direct mutation until GREEN
@@ -71,8 +71,9 @@ gate is registered (still **inert** until you run `fable-dispatch arm`; honours
 /reload-plugins
 ```
 
-After upgrading to `0.2.4`, `fable-dispatch config --executor opus` selects Opus 4.8 as the
-lead/body executor while Fable remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
+After upgrading to `0.2.5`, `fable-dispatch config --executor grok` selects Grok 4.5 as the
+lead/body executor. `fable-dispatch config --executor opus` selects Opus 4.8. In both cases Fable
+remains the advisor/brain (`FABLE_MODEL`, default `claude-fable-5`).
 
 **Developing/testing locally**, before or without publishing to a marketplace:
 
@@ -124,11 +125,22 @@ codex mcp add fable-advisor -- python3 "$PWD/fable_advisor_mcp.py"      # expose
 fable-dispatch config --executor opus                                   # Opus lead + Fable advisor
 ```
 
+For a Grok Build setup where **Grok 4.5 is the lead** and Fable is the specialist advisor:
+
+```bash
+grok --model grok-4.5 "Work normally, and call ask-fable for hard architecture/review calls"
+fable-dispatch config --executor grok                                   # Grok lead + Fable advisor
+ask-fable "What is the risky part of this plan?"
+```
+
+The first command starts an interactive Grok lead session. Dispatched orchestrator body work uses the
+`fable-dispatch` command shape described below.
+
 ## Orchestrator mode
 
 ```bash
 fable-dispatch arm
-fable-dispatch config --executor codex --effort high        # or --executor sonnet|opus
+fable-dispatch config --executor codex --effort high        # or --executor sonnet|opus|grok
 fable-dispatch "Implement X per spec: files, constraints, non-goals, and the exact test command"
 fable-dispatch verify --gate "pytest -q"                    # deterministic: GREEN iff exit 0
 # RED → dispatch fixes with concrete failure notes → verify again
@@ -145,20 +157,26 @@ invoke it (`disable-model-invocation: true`), so the brain never reconfigures it
 `~/.config/fable-fuse/config.json` > env > default.** Persist per-session with `fable-dispatch
 config …`, or permanently with `--global`. Either way, a change takes effect on the *next*
 `fable-dispatch` call — it does not affect a body that's already running.
+`--effort` is a shared speed/quality knob for Codex and Grok persisted config, so switching between
+those two executors keeps the same effort class unless you override the engine-specific env/config
+key directly.
 
 | toggle | env | default | purpose |
 |-|-|-|
-| `--executor` | `FABLE_EXECUTOR` | `codex` | body/driver/lead engine: `codex` \| `sonnet` \| `opus` |
+| `--executor` | `FABLE_EXECUTOR` | `codex` | body/driver/lead engine: `codex` \| `sonnet` \| `opus` \| `grok` |
 | `--model` | `FABLE_CODEX_MODEL` | *(unset)* | pin a specific Codex body model; unset = Codex CLI's own current default |
-| `--effort` | `FABLE_CODEX_EFFORT` | `high` | Codex reasoning effort |
-| `--fast on\|off` | `FABLE_CODEX_FAST` | `off` | speed preset → `FABLE_CODEX_FAST_EFFORT` (`low`) |
+| `--effort` | `FABLE_CODEX_EFFORT`, `FABLE_GROK_EFFORT` | `high` | Codex/Grok reasoning effort |
+| `--fast on\|off` | `FABLE_CODEX_FAST` | `off` | speed preset for Codex/Grok effort → `FABLE_CODEX_FAST_EFFORT` (`low`) |
 | `--sonnet-model` | `FABLE_SONNET_MODEL` | `claude-sonnet-5` | model when `executor=sonnet` |
 | `--opus-model` | `FABLE_OPUS_MODEL` | `claude-opus-4-8` | model when `executor=opus` |
+| `--grok-model` | `FABLE_GROK_MODEL` | `grok-4.5` | model when `executor=grok` |
 | — | `FABLE_MODEL` | `claude-fable-5` | Fable advisor/brain model |
 | — | `FABLE_CODEX_YOLO` | `1` | let the Codex body run commands/tests (`--yolo`) |
+| — | `FABLE_GROK_YOLO` | `1` | let the Grok body use `--permission-mode bypassPermissions`; set `0` to use Grok's default permission flow |
+| — | `FABLE_GROK_PERMISSION_MODE` | `bypassPermissions` when `FABLE_GROK_YOLO=1` | explicit Grok CLI permission mode for dispatched body tasks |
 
 Whole-command overrides: `FABLE_BODY_CMD` / `FABLE_EXECUTOR_CMD` (body/lead), `FABLE_CODEX_CMD`,
-`FABLE_SONNET_CMD`, `FABLE_OPUS_CMD`, `FABLE_ADVISOR_CMD` (Fable advisor/brain).
+`FABLE_SONNET_CMD`, `FABLE_OPUS_CMD`, `FABLE_GROK_CMD`, `FABLE_ADVISOR_CMD` (Fable advisor/brain).
 
 ## Staying current on model names
 
@@ -177,11 +195,16 @@ Opus executor default is `claude-opus-4-8`, based on Anthropic's official models
 4.8 release notes. Check the official Anthropic model docs before changing any Claude default,
 README claim, skill text, or marketplace metadata.
 
+xAI model names are checked the same way. The current Grok executor default is `grok-4.5`, based on
+xAI's official model docs and Grok Build docs, which describe Grok 4.5 as the model for code,
+agentic tasks, and knowledge work. Check official xAI docs before changing Grok defaults or claims.
+
 ## How it works (design in one screen)
 
 - **Body invocation** uses the selected executor. Codex follows steipete's proven `codex-first`
   pattern: `codex exec --yolo -c model_reasoning_effort=<e>`, prompt fed on **stdin** (robust for
-  large specs). Sonnet/Opus use `claude -p --model <model>`.
+  large specs). Sonnet/Opus use `claude -p --model <model>`. Grok writes the prompt to a managed
+  temp file and runs `grok --model grok-4.5 --reasoning-effort <effort> --permission-mode bypassPermissions --prompt-file <managed-temp-file>`; the temp prompt file is outside the repo and deleted after the run.
 - **Deterministic verdict** — the loop can only close on a real external gate. `verify --gate "<cmd>"`
   runs the command, records its **exit code** + a `git diff` sha into `verdict.json`; GREEN iff exit
   0. A prose "looks good" from the brain never closes the loop.
@@ -197,9 +220,9 @@ README claim, skill text, or marketplace metadata.
 FableFuse coordinates a body engine and preserves deterministic verification artifacts. It does
 **not** guarantee model output is correct, safe, or complete — bodies can fabricate, miss bugs, and
 consume provider quota. You are responsible for the review. Live runs need the selected body CLI
-(**Codex CLI** for `executor=codex`, **`claude` CLI** for `executor=sonnet|opus`) and a **`claude`
-CLI** with a Fable-capable model for advisor/brain calls. Offline tests, dry-runs, and the doctor
-work with neither.
+(**Codex CLI** for `executor=codex`, **`claude` CLI** for `executor=sonnet|opus`, **Grok Build CLI**
+for `executor=grok`) and a **`claude` CLI** with a Fable-capable model for advisor/brain calls.
+Offline tests, dry-runs, and the doctor work without live provider calls.
 
 ## Credits
 

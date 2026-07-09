@@ -131,13 +131,13 @@ step "public release scrub"
 python3 scripts/public-release-scrub.py --push-range
 
 step "market model names"
-if git grep -n -E 'claude-opus-5|Opus 5' -- \
+if git grep -n -E 'claude-opus-5|Opus 5|grok-5|Grok 5' -- \
   '*.py' '*.md' '*.json' '*.sh' \
   ':!scripts/pre-push-check.sh' \
   ':!CHANGELOG.md' >/tmp/fable-model-name-grep.$$; then
   cat /tmp/fable-model-name-grep.$$ >&2
   rm -f /tmp/fable-model-name-grep.$$
-  fail "found unverified Opus 5 references; current official Opus model is claude-opus-4-8"
+  fail "found unverified future model references; current official defaults are claude-opus-4-8 and grok-4.5"
 fi
 rm -f /tmp/fable-model-name-grep.$$
 
@@ -164,6 +164,15 @@ trap 'rm -rf "$tmpdir"' EXIT
 FABLE_CONFIG_DIR="$tmpdir/config" FABLE_STATE_DIR="$tmpdir/state" FABLE_RUNS_DIR="$tmpdir/runs" \
   python3 fable_dispatch.py --dry-run --executor opus --opus-model claude-opus-4-8 \
   "pre-push smoke: Opus lead with Fable advisor" >/dev/null
+
+step "grok lead dry-run smoke"
+grok_smoke="$(
+  FABLE_CONFIG_DIR="$tmpdir/config" FABLE_STATE_DIR="$tmpdir/state" FABLE_RUNS_DIR="$tmpdir/runs" \
+    python3 fable_dispatch.py --dry-run --executor grok --grok-model grok-4.5 \
+    "pre-push smoke: Grok lead with Fable advisor"
+)"
+printf '%s\n' "$grok_smoke" | grep -q 'grok --model grok-4.5' || fail "grok smoke did not select grok-4.5"
+printf '%s\n' "$grok_smoke" | grep -q -- '--prompt-file <prompt-file>' || fail "grok smoke did not use prompt-file"
 
 step "doctor"
 python3 fable_dispatch.py doctor || true

@@ -5,7 +5,7 @@ FableFuse pairs two model roles:
   - BODY / EXECUTOR = Codex   (`codex exec -c model_reasoning_effort=high`, no pinned model —
                               Codex's own current account-aware default is used unless
                               FABLE_CODEX_MODEL / --model explicitly pins one)
-                     or Sonnet / Opus through the Claude CLI when selected.
+                     or Sonnet / Opus through the Claude CLI, or Grok Build CLI when selected.
   - BRAIN / ADVISOR = Fable 5 (`claude -p --model claude-fable-5`)
 
 Two control flows are built on this foundation:
@@ -15,7 +15,7 @@ Two control flows are built on this foundation:
                         (fable_dispatch.py) behind a hard gate + deterministic verdict.
 
 This module owns everything shared so the two loops never drift:
-  - config toggles + precedence (codex model/effort/fast, fable model)
+  - config toggles + precedence (body/advisor models, effort, fast mode)
   - per-session state file (arm marker, last_dispatch_ts, verdict, session config)
   - body/lead + Fable command builders and a single run_engine()
   - artifact capture + bounded handoff cards (so N bodies never flood a brain's context)
@@ -46,16 +46,20 @@ STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
 # --------------------------------------------------------------------------- #
 # Effective config keys (all optional; env/config/session may override defaults):
 #   codex_model   body model            (default "" -> unset, Codex CLI's own current default)
-#   codex_effort  body reasoning effort  low|medium|high (default high)
+#   codex_effort  Codex reasoning effort  low|medium|high (default high)
+#   grok_effort   Grok reasoning effort   low|medium|high (default high)
 #   fast          bool speed preset      (default False) -> body uses fast_effort/fast_model
 #   fast_effort   effort when fast=on    (default low)
 #   fast_model    optional lighter body model when fast=on (default "" -> keep codex_model)
 #   fable_model   advisor (brain) model  (default claude-fable-5)
-#   executor      body/driver engine     codex|sonnet|opus|custom (default codex)
+#   executor      body/driver engine     codex|sonnet|opus|grok|custom (default codex)
 #   sonnet_model  model when executor=sonnet (default claude-sonnet-5)
 #   opus_model    model when executor=opus   (default claude-opus-4-8)
+#   grok_model    model when executor=grok   (default grok-4.5)
+#   FABLE_GROK_YOLO=0 disables the default Grok bypassPermissions body mode
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
-               "fable_model", "executor", "sonnet_model", "opus_model")
+               "fable_model", "executor", "sonnet_model", "opus_model", "grok_model",
+               "grok_effort")
 
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n", ""}
@@ -83,6 +87,7 @@ def defaults() -> dict:
         # default. Set FABLE_CODEX_MODEL / --model to pin a specific release.
         "codex_model": "",
         "codex_effort": "high",
+        "grok_effort": "high",
         "fast": False,
         "fast_effort": "low",
         "fast_model": "",
@@ -90,6 +95,7 @@ def defaults() -> dict:
         "executor": "codex",
         "sonnet_model": "claude-sonnet-5",
         "opus_model": "claude-opus-4-8",
+        "grok_model": "grok-4.5",
     }
 
 
@@ -99,12 +105,14 @@ def _env_config() -> dict:
     m = {
         "codex_model": "FABLE_CODEX_MODEL",
         "codex_effort": "FABLE_CODEX_EFFORT",
+        "grok_effort": "FABLE_GROK_EFFORT",
         "fast_effort": "FABLE_CODEX_FAST_EFFORT",
         "fast_model": "FABLE_CODEX_FAST_MODEL",
         "fable_model": "FABLE_MODEL",
         "executor": "FABLE_EXECUTOR",
         "sonnet_model": "FABLE_SONNET_MODEL",
         "opus_model": "FABLE_OPUS_MODEL",
+        "grok_model": "FABLE_GROK_MODEL",
     }
     for key, env in m.items():
         v = os.environ.get(env)
@@ -148,6 +156,7 @@ def resolve_config(overrides: dict | None = None, session_id: str | None = None)
         cfg.update({k: v for k, v in overrides.items() if k in CONFIG_KEYS and v is not None})
     cfg["fast"] = _as_bool(cfg.get("fast"), False)
     cfg["codex_effort"] = str(cfg.get("codex_effort") or "high").lower()
+    cfg["grok_effort"] = str(cfg.get("grok_effort") or "high").lower()
     cfg["fast_effort"] = str(cfg.get("fast_effort") or "low").lower()
     cfg["executor"] = str(cfg.get("executor") or "codex").lower()
     return cfg
@@ -275,12 +284,32 @@ def build_opus_command(cfg: dict) -> list[str]:
     return ["claude", "-p", "--model", cfg.get("opus_model") or "claude-opus-4-8"]
 
 
+def build_grok_command(cfg: dict) -> list[str]:
+    """Build the Grok Build lead/body command. Override with FABLE_GROK_CMD."""
+    override = os.environ.get("FABLE_GROK_CMD")
+    if override:
+        return shlex.split(override)
+    effort = cfg["fast_effort"] if cfg.get("fast") else cfg.get("grok_effort", "high")
+    permission = os.environ.get("FABLE_GROK_PERMISSION_MODE")
+    if permission is None and _as_bool(os.environ.get("FABLE_GROK_YOLO"), True):
+        permission = "bypassPermissions"
+    permission_flags = ["--permission-mode", permission] if permission else []
+    return [
+        "grok",
+        "--model", cfg.get("grok_model") or "grok-4.5",
+        "--reasoning-effort", effort,
+        *permission_flags,
+        "--prompt-file", "{prompt_file}",
+    ]
+
+
 def build_body_command(cfg: dict) -> list[str]:
-    """Build the BODY/EXECUTOR command for the selected engine (cfg['executor'] = codex|sonnet|opus).
+    """Build the BODY/EXECUTOR command for the selected engine.
 
     Universal override: FABLE_BODY_CMD / FABLE_EXECUTOR_CMD. Per-engine overrides:
-    FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD. This is the canonical body command; fable_dispatch
-    uses it so the executor is swappable per-session and permanently via config.
+    FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD / FABLE_GROK_CMD.
+    This is the canonical body command; fable_dispatch uses it so the executor
+    is swappable per-session and permanently via config.
     """
     override = os.environ.get("FABLE_BODY_CMD") or os.environ.get("FABLE_EXECUTOR_CMD")
     if override:
@@ -290,15 +319,31 @@ def build_body_command(cfg: dict) -> list[str]:
         return build_sonnet_command(cfg)
     if executor == "opus":
         return build_opus_command(cfg)
+    if executor == "grok":
+        return build_grok_command(cfg)
     return build_codex_command(cfg)
 
 
 def _apply_prompt(cmd: list[str], prompt: str) -> tuple[list[str], str | None]:
-    """If cmd contains a literal {prompt}, substitute it (no stdin). Else append prompt as the
-    final positional arg (works for `codex exec PROMPT` and `claude -p PROMPT`)."""
+    """If cmd contains a literal {prompt}, substitute it (no stdin). Else feed prompt on stdin."""
     if any("{prompt}" in a for a in cmd):
         return [a.replace("{prompt}", prompt) for a in cmd], None
     return cmd, prompt  # feed the prompt on stdin (codex exec `-`, claude -p, …)
+
+
+def _prepare_prompt_command(cmd: list[str], prompt: str) -> tuple[list[str], str | None, list[str]]:
+    """Prepare a command for execution, including managed temp files for {prompt_file}."""
+    if any("{prompt_file}" in a for a in cmd):
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", prefix="fable-prompt-", suffix=".txt", delete=False
+        ) as tmp:
+            tmp.write(prompt)
+            tmp_name = tmp.name
+        final = [a.replace("{prompt_file}", tmp_name) for a in cmd]
+        return final, None, [tmp_name]
+    final, stdin = _apply_prompt(cmd, prompt)
+    return final, stdin, []
 
 
 def run_engine(cmd: list[str], prompt: str, timeout: int = 300) -> tuple[int, str, str]:
@@ -307,11 +352,18 @@ def run_engine(cmd: list[str], prompt: str, timeout: int = 300) -> tuple[int, st
     import shutil
     if not cmd or not shutil.which(cmd[0]):
         return 127, "", f"{cmd[0] if cmd else '(empty)'} not on PATH"
-    final, stdin = _apply_prompt(cmd, prompt)
+    cleanup: list[str] = []
     try:
+        final, stdin, cleanup = _prepare_prompt_command(cmd, prompt)
         out = subprocess.run(final, input=stdin, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return 124, "", f"timeout after {timeout}s"
+    finally:
+        for path in cleanup:
+            try:
+                Path(path).unlink()
+            except OSError:
+                pass
     text = "\n".join(ln for ln in (out.stdout or "").splitlines()
                      if not ln.strip().startswith("[artifact:")).strip()
     return out.returncode, text, (out.stderr or "").strip()

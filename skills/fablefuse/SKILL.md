@@ -1,15 +1,15 @@
 ---
 name: fablefuse
 description: >
-  FableFuse brain/body pairing — swappable Codex/Sonnet/Opus lead/body + Fable 5 (BRAIN/advisor).
+  FableFuse brain/body pairing — swappable Codex/Sonnet/Opus/Grok lead/body + Fable 5 (BRAIN/advisor).
   Two modes: advisor (default, cost-optimal) and orchestrator (hard-gated dispatch loop).
   Use on /fablefuse, "fablefuse", "fable fuse", "fable brain", or when pairing Fable planning
-  with Codex/Sonnet/Opus execution.
+  with Codex/Sonnet/Opus/Grok execution.
 ---
 
 # FableFuse
 
-Pair **Fable 5** (brain/advisor) with a swappable **Codex/Sonnet/Opus** lead/body. Pick a mode at session start; stay in it unless the user switches.
+Pair **Fable 5** (brain/advisor) with a swappable **Codex/Sonnet/Opus/Grok** lead/body. Pick a mode at session start; stay in it unless the user switches.
 
 **Status line — lead every reply:**
 
@@ -26,13 +26,15 @@ Pair **Fable 5** (brain/advisor) with a swappable **Codex/Sonnet/Opus** lead/bod
 
 | Mode | Main loop | Fable role | Lead/body role | Cost profile |
 |------|-----------|------------|------------|--------------|
-| **advisor** (default) | Executor/lead (Codex 5.5-high, Sonnet 5, Opus 4.8, or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at lead/executor rate |
+| **advisor** (default) | Executor/lead (Codex 5.5-high, Sonnet 5, Opus 4.8, Grok 4.5, or in-session model) | On-demand consultant | Every turn — plans, tools, edits | Most tokens at lead/executor rate |
 | **orchestrator** | Fable (in-session brain) | Plans, routes, verifies, synthesizes | Dispatched bodies only | Fable tokens + bounded body cards |
 
 **Default to advisor** unless the user says orchestrator, `/fablefuse orchestrator`, or wants hard-gated delegation.
 
-**Executor** (the lead/body/driver) is swappable: `codex` (Codex 5.5-high, default), `sonnet` (Sonnet 5), or `opus` (Opus 4.8).
-Set per-session or permanently: `fable-dispatch config --executor codex|sonnet|opus [--global]`.
+**Executor** (the lead/body/driver) is swappable: `codex` (Codex 5.5-high, default), `sonnet` (Sonnet 5), `opus` (Opus 4.8), or `grok` (Grok 4.5).
+Set per-session or permanently: `fable-dispatch config --executor codex|sonnet|opus|grok [--global]`.
+Grok body dispatch uses `--prompt-file` for large specs; set `FABLE_GROK_YOLO=0` to disable the
+default Grok `bypassPermissions` body mode.
 
 ---
 
@@ -101,21 +103,23 @@ ask-fable "Your focused question — include only decision-relevant context"
 ### Advisor config (optional)
 
 Model/effort for selected bodies when you spawn them manually (`--model` is Codex-specific;
-use `--sonnet-model` or `--opus-model` for Claude-CLI leads):
+use `--sonnet-model` or `--opus-model` for Claude-CLI leads, and `--grok-model` for Grok Build):
 
 ```bash
-fable-dispatch config [--executor codex|sonnet|opus] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
+fable-dispatch config [--executor codex|sonnet|opus|grok] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--grok-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
 ```
 
 Effective defaults: no pinned model (Codex's own current default) @ `high` effort; pin a specific
 release with `--model`/`FABLE_CODEX_MODEL` if you want to lock a version. `--fast on` → lower
 effort (and optional lighter model).
+`--effort` is a shared persisted knob for Codex and Grok so switching between those engines keeps the
+same speed/quality class unless engine-specific env/config overrides are used.
 
 ---
 
 ## Orchestrator mode
 
-Fable is the **in-session brain**. The selected executor (`codex`, `sonnet`, or `opus`) is the **body** — all execution, research, tool use, and MCP gathering goes through dispatch. A **hard gate** blocks direct mutation while armed.
+Fable is the **in-session brain**. The selected executor (`codex`, `sonnet`, `opus`, or `grok`) is the **body** — all execution, research, tool use, and MCP gathering goes through dispatch. A **hard gate** blocks direct mutation while armed.
 
 ### Arm (session start)
 
@@ -165,7 +169,7 @@ Only after fresh **GREEN**. Disarms guards.
 ### Orchestrator config
 
 ```bash
-fable-dispatch config [--executor codex|sonnet|opus] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
+fable-dispatch config [--executor codex|sonnet|opus|grok] [--model MODEL] [--sonnet-model MODEL] [--opus-model MODEL] [--grok-model MODEL] [--effort low|medium|high] [--fast on|off] [--global]
 fable-dispatch config          # print effective config
 ```
 
@@ -201,6 +205,7 @@ underlying command, applies to the *next* dispatch, no restart needed.
 fable-dispatch arm
 fable-dispatch config --fast off --effort high
 fable-dispatch config --executor opus     # optional: Opus lead/body, Fable remains advisor/brain
+fable-dispatch config --executor grok     # optional: Grok 4.5 lead/body through Grok Build CLI
 fable-dispatch "Implement X per spec; run relevant checks"
 fable-dispatch verify --gate "pytest -q"
 # RED → fix dispatch → verify again

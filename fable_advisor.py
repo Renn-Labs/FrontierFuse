@@ -26,6 +26,8 @@ def _lead_description(cfg: dict) -> str:
         return f"Opus ({cfg.get('opus_model') or 'claude-opus-4-8'})"
     if executor == "sonnet":
         return f"Sonnet ({cfg.get('sonnet_model') or 'claude-sonnet-5'})"
+    if executor == "grok":
+        return f"Grok ({cfg.get('grok_model') or 'grok-4.5'})"
     return "Codex"
 
 

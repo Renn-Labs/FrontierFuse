@@ -6,6 +6,19 @@ versioning once it reaches 1.0.
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.2.5] - 2026-07-09
+
+### Added
+- Grok Build CLI can now be selected as the lead/body executor with
+  `fable-dispatch config --executor grok`, defaulting to the official `grok-4.5` model ID and
+  managed prompt-file delivery for large dispatch specs.
+- Added `FABLE_GROK_MODEL`, `--grok-model`, `FABLE_GROK_CMD`, `FABLE_GROK_EFFORT`, and
+  `FABLE_GROK_PERMISSION_MODE` support for Grok executor customization, plus `FABLE_GROK_YOLO=0`
+  to disable the default Grok `bypassPermissions` body mode.
+- Added Grok executor contract coverage and a pre-push Grok dry-run smoke check.
+
 ## [0.2.4] - 2026-07-09
 
 ### Fixed

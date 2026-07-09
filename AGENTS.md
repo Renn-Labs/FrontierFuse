@@ -25,6 +25,8 @@ Before changing default model IDs, README claims, skill text, marketplace metada
 current provider models, verify the exact model IDs against official provider documentation. Do not
 infer unreleased family names. As of the `0.2.4` correction, Opus means `claude-opus-4-8`; do not
 write an Opus major-version model ID unless official Anthropic docs list it.
+As of `0.2.5`, Grok means `grok-4.5` through the Grok Build CLI; verify xAI model IDs against
+official xAI docs before changing defaults or claims.
 
 Pushing, tagging, publishing packages, making the repo public, or adding live-provider CI remains a
 maintainer-gated action.

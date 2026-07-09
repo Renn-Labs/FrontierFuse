@@ -1,7 +1,7 @@
 ---
 name: fablefuse-config
 description: >
-  Interactively configure FableFuse's executor/lead (codex/sonnet/opus), model, effort, and fast-mode
+  Interactively configure FableFuse's executor/lead (codex/sonnet/opus/grok), model, effort, and fast-mode
   settings — for this session only, or permanently. Triggers on /fablefuse-config, "configure
   fablefuse", "change fablefuse executor/model/effort", "fablefuse settings".
 disable-model-invocation: true
@@ -28,20 +28,21 @@ back.
 2. **Ask, via `AskUserQuestion`, in one batch:**
    - **Scope** — "This session only" (default) vs. "Permanently (all future sessions)". Maps to
      omitting vs. passing `--global`.
-   - **Executor/lead** — "Codex (default)" vs. "Sonnet 5" vs. "Opus 4.8". Maps to `--executor codex|sonnet|opus`.
+   - **Executor/lead** — "Codex (default)" vs. "Sonnet 5" vs. "Opus 4.8" vs. "Grok 4.5". Maps to `--executor codex|sonnet|opus|grok`.
    - **Effort** — "high (default)" / "medium" / "low". Maps to `--effort`.
    - **Fast mode** — "off (default)" vs. "on (lower effort, quicker/cheaper bodies)". Maps to
      `--fast on|off`.
    Use the "Other" free-text option (always available) if the user wants to pin a specific model
-   instead of the default (`--model <id>` for Codex, `--sonnet-model <id>` for Sonnet, or
-   `--opus-model <id>` for Opus).
+   instead of the default (`--model <id>` for Codex, `--sonnet-model <id>` for Sonnet,
+   `--opus-model <id>` for Opus, or `--grok-model <id>` for Grok). Grok dispatch uses
+   `--prompt-file`; set `FABLE_GROK_YOLO=0` outside this flow to disable default `bypassPermissions`.
 
 3. **Apply it** by calling the existing, tested config command — this is the *only* place settings
    are written; do not hand-edit config files directly:
    ```bash
    python3 "$CLAUDE_PLUGIN_ROOT/fable_dispatch.py" config \
-     --executor <codex|sonnet|opus> --effort <low|medium|high> --fast <on|off> \
-     [--model <id>] [--sonnet-model <id>] [--opus-model <id>] [--global]
+     --executor <codex|sonnet|opus|grok> --effort <low|medium|high> --fast <on|off> \
+     [--model <id>] [--sonnet-model <id>] [--opus-model <id>] [--grok-model <id>] [--global]
    ```
 
 4. **Confirm** — print the effective config again (step 1's command) and tell the user plainly:

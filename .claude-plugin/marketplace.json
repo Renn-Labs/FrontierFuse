@@ -1,6 +1,6 @@
 {
   "name": "fablefuse",
-  "description": "FableFuse's own marketplace — Fable 5 (brain/advisor) + Codex/Sonnet/Opus (lead/body/executor), fused into one Claude Code workflow.",
+  "description": "FableFuse's own marketplace — Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow.",
   "owner": {
     "name": "Renn Labs",
     "url": "https://github.com/Renn-Labs"
@@ -9,9 +9,9 @@
     {
       "name": "fablefuse",
       "source": "./",
-      "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus (lead/body/executor), fused into one Claude Code workflow.",
-      "version": "0.2.4"
+      "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow.",
+      "version": "0.2.5"
     }
   ],
-  "version": "0.2.4"
+  "version": "0.2.5"
 }

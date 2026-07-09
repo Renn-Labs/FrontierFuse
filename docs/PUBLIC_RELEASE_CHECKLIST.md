@@ -39,7 +39,8 @@ any public exposure.
 - Update README install/upgrade instructions for user-visible behavior or configuration changes.
 - Verify any current-market model IDs or availability claims against official provider docs. Do not
   infer unreleased family names; current Opus executor defaults must remain `claude-opus-4-8` unless
-  official Anthropic docs say otherwise.
+  official Anthropic docs say otherwise. Current Grok executor defaults must remain `grok-4.5`
+  unless official xAI docs say otherwise.
 - Validate plugin metadata with `claude plugin validate .`.
 - Run keyless/offline tests only unless a maintainer explicitly approves live-provider validation.
 
