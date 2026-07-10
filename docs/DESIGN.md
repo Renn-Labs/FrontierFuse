@@ -1,4 +1,4 @@
-# FrontierFuse Architecture (0.3.0)
+# FrontierFuse Architecture (0.3.1)
 
 This document describes the shipped Claude Code plugin. The roadmap is in
 `docs/FRONTIERFUSE_EXECUTION_PLAN.md`.
@@ -120,7 +120,7 @@ credentials, and private paths are never release artifacts.
 
 Claude Code uses `.claude-plugin/plugin.json`, the self-referential marketplace manifest,
 conventional hook loading, and skill discovery. Codex and Grok use a stable checkout plus stdio MCP
-registration in 0.3.0; separate marketplace packages are not claimed.
+registration in 0.3.1; separate marketplace packages are not claimed.
 
 Doctor is offline by default. Passive update reminders use an owner-only seven-day cache, send no
 machine or project data, and never mutate an installation.

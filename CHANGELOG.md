@@ -8,6 +8,14 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.1] - 2026-07-09
+
+### Changed
+- Updated GitHub Actions to the current Node 24-based `actions/checkout@v7` and
+  `actions/setup-python@v6` releases so public CI runs without the Node 20 deprecation annotation.
+- Corrected the public GitHub About description, homepage, and discovery topics to describe
+  selectable frontier and executor providers instead of Fable as the only brain.
+
 ## [0.3.0] - 2026-07-09
 
 ### Added

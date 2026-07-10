@@ -379,5 +379,5 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-The active build is `0.3.0`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
+The active build is `0.3.1`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
 and evidence gates are satisfied.

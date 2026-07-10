@@ -49,7 +49,7 @@ def main() -> int:
         def newer(_url: str, _timeout: float) -> dict:
             nonlocal calls
             calls += 1
-            return {"version": "0.3.1"}
+            return {"version": "0.3.2"}
 
         result = update.check_for_updates(
             allow_network=True, fetcher=newer, now=1000, mode="passive"
