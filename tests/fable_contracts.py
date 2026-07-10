@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 import fable_common as fc  # noqa: E402
 import fable_advisor  # noqa: E402
+import fable_verify  # noqa: E402
 
 SLACK = 120  # truncation marker headroom beyond MAX_RETURN_CHARS
 
@@ -45,16 +46,11 @@ def _restore(name: str, old: str | None) -> None:
 
 def _load_hook(rel_path: str):
     path = ROOT / rel_path
-    if not path.is_file():
-        return None
+    assert path.is_file(), f"hook missing: {path}"
     spec = importlib.util.spec_from_file_location(f"fable_hook_{path.stem}", path)
-    if spec is None or spec.loader is None:
-        return None
+    assert spec is not None and spec.loader is not None, f"cannot load hook: {path}"
     mod = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(mod)
-    except Exception:
-        return None
+    spec.loader.exec_module(mod)
     return mod
 
 
@@ -156,31 +152,31 @@ def test_resolve_config_precedence() -> None:
 def test_build_codex_command_fast_swaps_effort() -> None:
     assert fc.build_codex_command(fc.resolve_config()) == ["echo"]
     old_cmd = _env("FABLE_CODEX_CMD", None)
-    old_yolo = _env("FABLE_CODEX_YOLO", "1")
+    old_yolo = _env("FABLE_CODEX_YOLO", None)
     try:
         cfg = {
-            "codex_model": "gpt-5.5-codex",
+            "codex_model": "codex-test-model",
             "codex_effort": "high",
             "fast": True,
             "fast_effort": "low",
-            "fast_model": "gpt-fast-lite",
-            "fable_model": "claude-fable-5",
+            "fast_model": "fast-test-model",
+            "fable_model": "advisor-test-model",
         }
         cmd = fc.build_codex_command(cfg)
         assert cmd == [
-            "codex", "exec", "--yolo", "--model", "gpt-fast-lite",
+            "codex", "exec", "--model", "fast-test-model",
             "-c", "model_reasoning_effort=low", "-",
         ], cmd
 
         cfg["fast"] = False
         cmd = fc.build_codex_command(cfg)
         assert cmd == [
-            "codex", "exec", "--yolo", "--model", "gpt-5.5-codex",
+            "codex", "exec", "--model", "codex-test-model",
             "-c", "model_reasoning_effort=high", "-",
         ], cmd
 
-        os.environ["FABLE_CODEX_YOLO"] = "0"
-        assert "--yolo" not in fc.build_codex_command(cfg)
+        os.environ["FABLE_CODEX_YOLO"] = "1"
+        assert "--yolo" in fc.build_codex_command(cfg)
     finally:
         _restore("FABLE_CODEX_YOLO", old_yolo)
         _restore("FABLE_CODEX_CMD", old_cmd)
@@ -200,8 +196,8 @@ def test_build_body_command_executor() -> None:
         codex_cfg = fc.resolve_config(overrides={"executor": "codex"})
         assert fc.build_body_command(codex_cfg)[0] == "codex"
 
-        sonnet_cfg = fc.resolve_config(overrides={"executor": "sonnet", "sonnet_model": "claude-sonnet-5"})
-        assert fc.build_body_command(sonnet_cfg) == ["claude", "-p", "--model", "claude-sonnet-5"]
+        sonnet_cfg = fc.resolve_config(overrides={"executor": "sonnet", "sonnet_model": "sonnet-test-model"})
+        assert fc.build_body_command(sonnet_cfg) == ["claude", "-p", "--model", "sonnet-test-model"]
 
         opus_cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-4-8"})
         assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-4-8"]
@@ -210,7 +206,7 @@ def test_build_body_command_executor() -> None:
         grok_cfg = fc.resolve_config(overrides={"executor": "grok", "grok_model": "grok-4.5"})
         assert fc.build_body_command(grok_cfg) == [
             "grok", "--model", "grok-4.5", "--reasoning-effort", "high",
-            "--permission-mode", "bypassPermissions", "--prompt-file", "{prompt_file}",
+            "--prompt-file", "{prompt_file}",
         ]
         final_cmd, stdin, cleanup = fc._prepare_prompt_command(
             fc.build_body_command(grok_cfg), "hello from grok"
@@ -240,8 +236,10 @@ def test_build_body_command_executor() -> None:
         ] == "medium"
         os.environ.pop("FABLE_GROK_EFFORT", None)
 
-        os.environ["FABLE_GROK_YOLO"] = "0"
-        assert "--permission-mode" not in fc.build_body_command(grok_cfg)
+        os.environ["FABLE_GROK_YOLO"] = "1"
+        assert fc.build_body_command(grok_cfg)[
+            fc.build_body_command(grok_cfg).index("--permission-mode") + 1
+        ] == "bypassPermissions"
         os.environ["FABLE_GROK_PERMISSION_MODE"] = "auto"
         auto_cmd = fc.build_body_command(grok_cfg)
         assert auto_cmd[auto_cmd.index("--permission-mode") + 1] == "auto"
@@ -376,8 +374,7 @@ def test_guards_off_honors_kill_switches() -> None:
 
 def test_pretool_gate_contracts() -> None:
     gate = ROOT / "hooks" / "fable_gate.py"
-    if not gate.is_file() or _load_hook("hooks/fable_gate.py") is None:
-        return
+    _load_hook("hooks/fable_gate.py")
 
     sid = "contract-pretool"
     fc.clear_state(sid)
@@ -403,8 +400,7 @@ def test_pretool_gate_blocks_bash_chaining() -> None:
     """Regression: an allowlisted prefix must not let a chained command through
     (e.g. "git status -sb && rm -rf ..."). A prefix match alone is not enough."""
     gate = ROOT / "hooks" / "fable_gate.py"
-    if not gate.is_file() or _load_hook("hooks/fable_gate.py") is None:
-        return
+    _load_hook("hooks/fable_gate.py")
 
     sid = "contract-bash-chain"
     fc.clear_state(sid)
@@ -431,35 +427,37 @@ def test_pretool_gate_blocks_bash_chaining() -> None:
         fc.clear_state(sid)
 
 
-def test_pretool_gate_allows_realistic_invocation_forms() -> None:
-    """Regression (found via live dogfooding, not a synthetic test): a just-armed session's own
-    brain naturally invokes allowlisted scripts as `python3 <script> ...` and sometimes prefixes a
-    scoped env var (`FOO=bar cmd`) — neither form matched a literal prefix check, so the brain
-    immediately got blocked fighting its own gate on the most natural invocations. These must be
-    ALLOWED (the metacharacter/chaining check must still catch anything actually dangerous)."""
+def test_pretool_gate_allows_only_frozen_verification() -> None:
+    """The armed controller can inspect, dispatch, and run the host-frozen gate, but cannot
+    reconfigure the workflow, replace the verifier, or smuggle behavior through environment vars."""
     gate = ROOT / "hooks" / "fable_gate.py"
-    if not gate.is_file() or _load_hook("hooks/fable_gate.py") is None:
-        return
+    _load_hook("hooks/fable_gate.py")
 
     sid = "contract-realistic-invocations"
     fc.clear_state(sid)
     try:
-        fc.write_state(sid, armed=True)
+        approved = {"gate": "true", "argv": ["true"], "cwd": str(ROOT)}
+        fc.write_state(sid, armed=True, approved_gate=approved)
 
         allowed_commands = [
             "python3 fable_dispatch.py --help",
-            "python3 fable_dispatch.py arm",
-            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help",
-            "FABLE_GATE_ALLOW_TRIVIAL=1 wc -l fable_dispatch.py hooks/fable_gate.py fable_common.py",
-            "fable-dispatch disarm",
-            "python3 fable_verify.py --gate \"true\"",
+            "python3 fable_dispatch.py doctor",
+            "fable-dispatch config",
+            "fable-dispatch verify",
+            "wc -l fable_dispatch.py hooks/fable_gate.py fable_common.py",
         ]
         for cmd in allowed_commands:
             proc = _run_hook(gate, _pretool_payload(sid, "Bash", {"command": cmd}))
             assert _pretool_allowed(proc), f"{cmd!r} must be allowed; stdout={proc.stdout!r}"
 
-        # normalization must never defeat the chaining check, even with an env/interpreter prefix
         still_denied = [
+            "python3 fable_dispatch.py arm --gate true",
+            "fable-dispatch disarm",
+            "fable-dispatch config --executor codex",
+            "fable-dispatch verify --gate true",
+            "python3 fable_verify.py --gate true",
+            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help",
+            "FABLE_GATE_ALLOW_TRIVIAL=1 wc -l fable_dispatch.py",
             "python3 fable_dispatch.py --help && rm -rf /tmp/x",
             "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help; rm -rf /tmp/x",
         ]
@@ -563,52 +561,136 @@ def test_cmd_done_refuses_without_fresh_green() -> None:
     can always run the (Bash-allowlisted) `fable-dispatch done` to kill the gate on demand."""
     sid = "contract-done-refuses"
     fc.clear_state(sid)
-    try:
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None)
-        proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
-        assert proc.returncode != 0, f"done without a verdict must fail; stdout={proc.stdout!r}"
-        assert fc.read_state(sid)["armed"] is True, "gate must stay armed without a fresh GREEN"
+    with tempfile.TemporaryDirectory(prefix="fable-done-") as td:
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
+            approved = {"gate": "true", "argv": ["true"], "cwd": str(Path(td).resolve())}
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
+                           approved_gate=approved)
+            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            assert proc.returncode != 0, f"done without a verdict must fail; stdout={proc.stdout!r}"
+            assert fc.read_state(sid)["armed"] is True, "gate must stay armed without a fresh GREEN"
 
-        stale = fc.make_verdict("pytest -q", 0, "sha", [], 90.0, 90.0)
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=stale)
-        proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
-        assert proc.returncode != 0, f"done with a stale GREEN must still fail; stdout={proc.stdout!r}"
-        assert fc.read_state(sid)["armed"] is True
+            stale = fc.make_verdict("pytest -q", 0, "sha", [], 90.0, 90.0)
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=stale,
+                           approved_gate=approved)
+            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            assert proc.returncode != 0, f"done with a stale GREEN must still fail; stdout={proc.stdout!r}"
+            assert fc.read_state(sid)["armed"] is True
 
-        fresh = fc.make_verdict("pytest -q", 0, "sha", [], 110.0, 100.0)
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=fresh)
-        proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
-        assert proc.returncode == 0, f"done with a fresh GREEN must succeed; stdout={proc.stdout!r} stderr={proc.stderr!r}"
-        assert fc.read_state(sid)["armed"] is False, "gate must disarm on a fresh GREEN"
-    finally:
-        fc.clear_state(sid)
+            legacy_fresh = fc.make_verdict("true", 0, "sha", [], 110.0, 100.0)
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=legacy_fresh,
+                           approved_gate=approved)
+            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            assert proc.returncode != 0, "legacy timestamp-only GREEN must not close the guardrail"
+            assert fc.read_state(sid)["armed"] is True
+
+            # A body can run fable_verify directly outside the Claude hook surface. Its GREEN
+            # must still not close a loop whose host froze a different gate.
+            forged_approved = {"gate": "false", "argv": ["false"], "cwd": str(Path(td).resolve())}
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
+                           approved_gate=forged_approved)
+            forged = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            assert forged["result"] == "GREEN"
+            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            assert proc.returncode != 0, "GREEN from a non-approved gate must not disarm"
+            assert fc.read_state(sid)["armed"] is True
+
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
+                           approved_gate=approved)
+            verdict = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            assert verdict["result"] == "GREEN" and verdict["schema_version"] == 2
+            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            assert proc.returncode == 0, (
+                f"done with snapshot-bound GREEN must succeed; stdout={proc.stdout!r} "
+                f"stderr={proc.stderr!r}")
+            assert fc.read_state(sid)["armed"] is False, "gate must disarm on a fresh GREEN"
+        finally:
+            fc.clear_state(sid)
+
+
+def test_arm_freezes_verification_command() -> None:
+    sid = "contract-frozen-gate"
+    fc.clear_state(sid)
+    with (
+        tempfile.TemporaryDirectory(prefix="fable-gate-") as td,
+        tempfile.TemporaryDirectory(prefix="fable-other-") as other,
+    ):
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
+            env = {"FABLE_SESSION_ID": sid}
+            non_git_env = {"FABLE_SESSION_ID": f"{sid}-non-git"}
+            proc = _run_dispatch(["arm", "--gate", "true", "--cwd", other], extra_env=non_git_env)
+            assert proc.returncode == 2, "a closable arm must require a Git worktree"
+            proc = _run_dispatch(["arm", "--gate", "true", "--cwd", td], extra_env=env)
+            assert proc.returncode == 0, f"arm failed: {proc.stdout!r} {proc.stderr!r}"
+
+            state = fc.read_state(sid)
+            assert state["armed"] is True
+            assert state["approved_gate"] == {
+                "gate": "true",
+                "argv": ["true"],
+                "cwd": str(Path(td).resolve()),
+            }
+
+            proc = _run_dispatch(["verify", "--gate", "true"], extra_env=env)
+            assert proc.returncode == 2, "armed verify must reject even an identical gate restatement"
+            proc = _run_dispatch(["verify", "--gate", "false"], extra_env=env)
+            assert proc.returncode == 2, "armed verify must reject replacement gate argv"
+            proc = _run_dispatch(["verify", "--cwd", td], extra_env=env)
+            assert proc.returncode == 2, "armed verify must reject even an identical cwd restatement"
+            proc = _run_dispatch(["verify", "--cwd", other], extra_env=env)
+            assert proc.returncode == 2, "armed verify must reject replacement workspace"
+
+            proc = _run_dispatch(["verify"], extra_env=env)
+            assert proc.returncode == 0, f"frozen gate failed: {proc.stdout!r} {proc.stderr!r}"
+            assert fc.read_state(sid)["verdict"]["schema_version"] == 2
+
+            proc = _run_dispatch(["arm"], extra_env=env)
+            assert proc.returncode == 0
+            proc = _run_dispatch(["verify"], extra_env=env)
+            assert proc.returncode == 2, "armed verify without a host-approved gate must fail closed"
+        finally:
+            fc.clear_state(sid)
 
 
 def test_stop_gate_contracts() -> None:
     stop = ROOT / "hooks" / "fable_verify_gate.py"
-    if not stop.is_file() or _load_hook("hooks/fable_verify_gate.py") is None:
-        return
+    _load_hook("hooks/fable_verify_gate.py")
 
     sid = "contract-stop"
     fc.clear_state(sid)
     old_guards = _env("FABLE_GUARDS_OFF", None)
-    try:
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None)
-        proc = _run_hook(stop, _stop_payload(sid))
-        assert proc.returncode == 2, f"no fresh GREEN should block Stop; rc={proc.returncode}"
+    with tempfile.TemporaryDirectory(prefix="fable-stop-") as td:
+        try:
+            subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
+            approved = {"gate": "true", "argv": ["true"], "cwd": str(Path(td).resolve())}
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
+                           approved_gate=approved)
+            proc = _run_hook(stop, _stop_payload(sid))
+            assert proc.returncode == 2, f"no fresh GREEN should block Stop; rc={proc.returncode}"
 
-        stale = fc.make_verdict("pytest -q", 0, "sha", [], 90.0, 90.0)
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=stale)
-        proc = _run_hook(stop, _stop_payload(sid))
-        assert proc.returncode == 2, f"stale GREEN should block Stop; rc={proc.returncode}"
+            stale = fc.make_verdict("pytest -q", 0, "sha", [], 90.0, 90.0)
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=stale,
+                           approved_gate=approved)
+            proc = _run_hook(stop, _stop_payload(sid))
+            assert proc.returncode == 2, f"stale GREEN should block Stop; rc={proc.returncode}"
 
-        fresh = fc.make_verdict("pytest -q", 0, "sha", [], 110.0, 100.0)
-        fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=fresh)
-        proc = _run_hook(stop, _stop_payload(sid))
-        assert proc.returncode == 0, f"fresh GREEN should allow Stop; rc={proc.returncode} stderr={proc.stderr!r}"
-    finally:
-        _restore("FABLE_GUARDS_OFF", old_guards)
-        fc.clear_state(sid)
+            legacy_fresh = fc.make_verdict("true", 0, "sha", [], 110.0, 100.0)
+            fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=legacy_fresh,
+                           approved_gate=approved)
+            proc = _run_hook(stop, _stop_payload(sid))
+            assert proc.returncode == 2, "legacy timestamp-only GREEN must not allow Stop"
+
+            verdict = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            assert verdict["result"] == "GREEN" and verdict["schema_version"] == 2
+            proc = _run_hook(stop, _stop_payload(sid))
+            assert proc.returncode == 0, (
+                f"snapshot-bound GREEN should allow Stop; rc={proc.returncode} "
+                f"stderr={proc.stderr!r}")
+        finally:
+            _restore("FABLE_GUARDS_OFF", old_guards)
+            fc.clear_state(sid)
 
 
 def main() -> int:
@@ -624,10 +706,11 @@ def main() -> int:
         test_guards_off_honors_kill_switches,
         test_pretool_gate_contracts,
         test_pretool_gate_blocks_bash_chaining,
-        test_pretool_gate_allows_realistic_invocation_forms,
+        test_pretool_gate_allows_only_frozen_verification,
         test_session_id_defaults_to_claude_code_session_id,
         test_dispatch_config_accepts_opus_executor,
         test_dispatch_config_accepts_grok_executor,
+        test_arm_freezes_verification_command,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,
     ]

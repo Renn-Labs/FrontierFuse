@@ -8,6 +8,63 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.2.6] - 2026-07-09
+
+### Security
+- **Host-frozen verification.** The host freezes the acceptance command at arm time with
+  `fable-dispatch arm --gate "<single argv command>" [--cwd PATH]`. While armed, `verify` runs that
+  frozen command only — the model cannot substitute a different gate. `done` requires a
+  **snapshot-bound GREEN** that still matches the workspace and the arm-time argv/cwd.
+- **Argv-only gate execution.** The gate runs as argv with `shell=False`. Shell pipelines, chaining,
+  and redirection are not accepted as the closing path. An explicit `--legacy-shell` /
+  `FABLE_VERIFY_LEGACY_SHELL` compatibility path remains for tooling that needs it, but it is
+  marked **unsafe** and **cannot** close the hardened Stop hook.
+- **Complete Git evidence for closure.** A closable arm now requires a Git worktree. Non-Git and
+  truncated untracked snapshots cannot produce GREEN, preventing a vacuous workspace receipt.
+- **Armed Bash policy hardened.** The PreToolUse allowlist uses parsed argv (not prefix matching
+  alone), blocks direct provider CLIs and `disarm`/`arm`/hook-install paths from the model, and
+  blocks `git -c` / external-diff style gate bypasses. Snapshot fingerprints for untracked files
+  are hardened beyond a content-hash cap.
+- **Safer default body permissions.** Codex and Grok now inherit **provider defaults**. Autonomous
+  elevation is opt-in: `FABLE_CODEX_YOLO=1` (Codex `--yolo`) and `FABLE_GROK_YOLO=1` (Grok
+  `--permission-mode bypassPermissions`). `FABLE_GROK_PERMISSION_MODE` still sets an explicit mode
+  when needed.
+- **Owner-only local artifacts.** Config, state, prompt files, run dirs, response artifacts, and
+  handoff cards are written owner-only (`0600` files / `0700` directories). Cross-provider prompts
+  still leave the machine for the selected providers; local artifacts/state remain owner-only.
+
+### Added
+- Snapshot-bound verdict schema (workspace HEAD/index/diff/untracked + gate identity) so GREEN is
+  stale when the tree moves after verify.
+- Aggregate offline runner `tests/run_contracts.py` — discovers and runs every
+  `tests/*_contracts.py` suite (including gate security, safe-execution, and verification-snapshot
+  contracts). CI and pre-push use this aggregate entry point.
+- Standalone contract suites for the armed Bash policy, safer execution defaults, and
+  snapshot-bound verification.
+
+### Changed
+- Orchestrator enforcement is documented and messaged as a **workflow guardrail** (not a hard
+  sandbox). Kill-switch remains `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
+- Codex body default is `codex exec -c model_reasoning_effort=<e> -` (no `--yolo` unless opted in).
+- Grok body default omits `--permission-mode` unless YOLO or `FABLE_GROK_PERMISSION_MODE` is set.
+- Unknown executors fail closed; whole-command overrides (`FABLE_*_CMD`) remain trusted
+  compatibility inputs for tests and custom harnesses.
+
+### Migration notes
+- **Re-arm with a frozen gate.** Prefer
+  `fable-dispatch arm --gate "pytest -q"` (or your single argv test/build/lint command). After
+  upgrade, sessions armed without a frozen gate cannot verify/finish until re-armed with `--gate`.
+- **Gate command shape.** Use a single argv command string (`"pytest -q"`, `"python3 -m unittest"`).
+  Do not rely on shell pipelines (`cmd1 | cmd2`) or chaining (`&&` / `;`) for the closing gate.
+- **YOLO is no longer the default.** If your workflow needs unattended body autonomy, set
+  `export FABLE_CODEX_YOLO=1` and/or `export FABLE_GROK_YOLO=1` explicitly (and only on repos you
+  trust).
+- **Plugin update.** After
+  `/plugin marketplace update fablefuse` and `/plugin update fablefuse@fablefuse`, **restart**
+  Claude Code so hooks and skills reload.
+- Compatibility commands, plugin ID (`fablefuse`), and core CLIs (`fable-dispatch`, `ask-fable`,
+  advisor MCP) are unchanged.
+
 ## [0.2.5] - 2026-07-09
 
 ### Added
@@ -91,7 +148,7 @@ session — not a synthetic test:
   raw artifacts, `arm`/`disarm`/`done`/`verify`/`config`/`doctor`/`install-hooks`).
 - **Deterministic verify**: `fable_verify.py` runs an external gate and writes `verdict.json`
   (GREEN iff the gate exits 0), with a diff sha and freshness check.
-- **Narrowed hard gate**: `hooks/fable_gate.py` (PreToolUse) blocks the brain's direct
+- **Workflow guardrail**: `hooks/fable_gate.py` (PreToolUse) blocks the brain's direct
   mutation/execution while armed; `hooks/fable_verify_gate.py` (Stop) blocks finishing until a fresh
   GREEN verdict. Tunable allowlist, trivial-edit escape, and `FABLE_GUARDS_OFF` kill-switch.
 - Runtime config toggles (`executor`, `codex_model`, `codex_effort`, `fast`, `sonnet_model`, `fable_model`)
@@ -101,13 +158,13 @@ session — not a synthetic test:
 
 ### Fixed
 Found during live smoke + code review (native + `peer trio`) before the initial commit:
-- **Hard gate never engaged in a real Claude Code session** — `fable-dispatch` defaulted its
+- **Workflow guardrail never engaged in a real Claude Code session** — `fable-dispatch` defaulted its
   session key to the literal string `"default"`, but the real PreToolUse/Stop hook payload carries
   Claude Code's actual session id. `SESSION_ID` now auto-derives from `$CLAUDE_CODE_SESSION_ID`.
 - **Bash allowlist bypass** — prefix matching alone let a chained command through an allowlisted
   prefix (e.g. `git status && rm -rf ...`). The gate now rejects any command containing shell
   metacharacters (`&& ; | \` $( > <`), not just prefix-matching the base command.
-- **`fable-dispatch done` unconditionally disarmed** the hard gate regardless of verdict state,
+- **`fable-dispatch done` unconditionally disarmed** the guardrail regardless of verdict state,
   letting the brain kill the gate on demand (it's itself Bash-allowlisted). `done` now refuses to
   disarm without a fresh GREEN verdict.
 - `verdict.json` now chmod 0600 (can contain gate stdout/stderr).
@@ -124,5 +181,5 @@ Found during live smoke + code review (native + `peer trio`) before the initial 
   "Staying current on model names".
 
 ### Notes
-- Body invocation follows steipete/agent-scripts `codex-first` (`codex exec --yolo
-  -c model_reasoning_effort=high`, prompt on stdin).
+- Body invocation follows steipete/agent-scripts `codex-first` (`codex exec` with opt-in `--yolo`,
+  `-c model_reasoning_effort=high`, prompt on stdin).

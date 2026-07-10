@@ -1,25 +1,29 @@
 # FableFuse Agent Guidance
 
-FableFuse is a Claude Code plugin that pairs **Fable 5** (brain/advisor) with a swappable **lead/
-body/executor**: **Codex** by default (no model version pinned, see README "Staying current on model
-names"), **Sonnet 5** / **Opus 4.8** through the Claude CLI, or **Grok 4.5** through Grok Build CLI.
-Keep changes aligned with the core
-promise: two selectable control flows (advisor default, orchestrator), a **deterministic** verify
-gate, a narrowed & kill-switchable hard gate, pluggable executor, and local-first setup — all
+FableFuse is a Claude Code plugin that pairs **Fable 5** (`claude-fable-5`, brain/advisor) with a
+swappable **lead/body/executor**: **Codex** by default (no model version pinned), **Sonnet 5**
+(`claude-sonnet-5`) / **Opus 4.8** (`claude-opus-4-8`) through the Claude CLI, or **Grok 4.5**
+(`grok-4.5`) through Grok Build CLI. Keep changes aligned with the core promise: two selectable
+control flows (advisor default, orchestrator), a **deterministic snapshot-bound** verify gate, a
+narrowed & kill-switchable **workflow guardrail**, pluggable executor, and local-first setup — all
 stdlib-only and offline-testable.
 
 ## Architecture (don't drift from this)
 
 - `fable_common.py` — the shared contract: config toggles + precedence, per-session state, verdict
-  schema, command builders (`build_body_command` dispatches on `executor=codex|sonnet|opus|grok`), artifact/handoff-card
-  helpers, kill-switch. Everything imports it; don't fork its logic.
-- `fable_advisor.py` / `fable_advisor_mcp.py` — advisor mode (`ask_fable`): executor drives, Fable
-  advises on-demand.
+  schema, command builders (`build_body_command` dispatches on `executor=codex|sonnet|opus|grok`),
+  artifact/handoff-card helpers, kill-switch, owner-only writes. Everything imports it; don't fork
+  its logic.
+- `fable_advisor.py` / `fable_advisor_mcp.py` — advisor mode (`ask_fable`): **executor-led** host
+  loop; Fable advises on demand.
 - `fable_dispatch.py` — orchestrator body-caller + control CLI (arm/dispatch/verify/config/doctor/
-  install-hooks). Uses `build_body_command` so the executor is swappable.
-- `fable_verify.py` — deterministic gate → `verdict.json` (GREEN iff the gate's exit code is 0).
-- `hooks/fable_gate.py` (PreToolUse) + `hooks/fable_verify_gate.py` (Stop) — the hard gate. Inert
-  unless armed; honour `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
+  install-hooks). Uses `build_body_command` so the executor is swappable. **Host freezes** gate
+  argv + cwd at `arm --gate "…" [--cwd PATH]`; armed `verify` uses that freeze.
+- `fable_verify.py` — deterministic gate → `verdict.json` (schema v2). GREEN iff gate exit 0 **and**
+  workspace snapshot stable/matching; default `shell=False`; legacy shell is unsafe and cannot close.
+- `hooks/fable_gate.py` (PreToolUse) + `hooks/fable_verify_gate.py` (Stop) — workflow guardrail on
+  the Claude hook surface. Inert unless armed; honour `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
+  Not a sandbox: host can kill-switch, disarm, or run outside hooks.
 - `skills/fablefuse-config/SKILL.md` — interactive mid-flight config; must only ever call
   `fable-dispatch config` (never invent a second config storage path).
 
@@ -34,28 +38,38 @@ stdlib-only and offline-testable.
   they live, update **both** paths — `hooks/hooks.json` and `settings.hooks.snippet.json` — so they
   don't drift apart.
 - Bump `version` in `plugin.json` **and** `marketplace.json` together; keep them equal.
+- Do not claim separate Codex/Grok plugin packages ship unless maintainers have published them.
 
 ## Invariants
 
 - **stdlib-only, Python 3.10+.** No third-party imports in the shipped modules.
-- **The loop closes only on a fresh deterministic GREEN** (verdict stamped after the last dispatch).
-  A prose verdict must never be able to satisfy the Stop gate.
-- **The hard gate is narrowed** — mutation tools + a Bash allowlist, not a blanket block. Keep the
-  trivial-edit escape and kill-switch.
-- **Body invocation** stays robust for large specs: Codex uses stdin (`codex exec --yolo -c
-  model_reasoning_effort=<e> -`), Grok uses `--prompt-file`, and all engines stay overridable via
-  `FABLE_*_CMD`.
+- **The loop closes only on a fresh snapshot-bound GREEN** (verdict stamped after the last
+  dispatch, exit 0, stable complete Git snapshot, arm-time argv/cwd binding, not unsafe/legacy).
+  A prose verdict must never satisfy the Stop gate.
+- **Workflow guardrail is narrowed** — mutation tools + argv-validated Bash policy, not a blanket
+  block. Direct body CLI mutation is denied only while armed on the Claude hook surface. Keep the
+  trivial-edit escape and kill-switch. Never describe it as sandbox/security isolation.
+- **Body invocation** stays robust for large specs: Codex uses stdin (`codex exec … -`), Grok uses
+  `--prompt-file`, and all engines stay overridable via `FABLE_*_CMD`. Elevated autonomy
+  (`FABLE_CODEX_YOLO=1`, `FABLE_GROK_YOLO=1`) is **opt-in**; default inherits provider permissions.
 - **Market model names must be verified against official provider docs before shipping.** Do not
-  infer unreleased family names. As of the `0.2.4` correction, Opus means `claude-opus-4-8`; do not
-  write an Opus major-version model ID unless official Anthropic docs list it.
-  As of `0.2.5`, Grok means `grok-4.5` through the Grok Build CLI; verify xAI model IDs against
-  official xAI docs before changing defaults or claims.
+  infer unreleased family names. Exact verified current IDs:
+  - Fable: `claude-fable-5`
+  - Sonnet: `claude-sonnet-5`
+  - Opus: `claude-opus-4-8` (do not write an Opus major-version model ID unless official Anthropic
+    docs list it)
+  - Grok: `grok-4.5` through Grok Build CLI (verify xAI IDs before changing defaults)
+  - Codex: deliberately **unpinned** (empty default → CLI account-aware model)
+  - GPT-5.6 limited-preview IDs: `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` for entitled
+    orgs only — never a product default here; never imply general or ChatGPT availability.
 
 ## Verification
 
-Before claiming a change works: `python3 tests/fable_contracts.py` must print PASS, and drive the
-real CLI for anything with runtime behaviour (dispatch dry-run, gate hook with synthetic JSON,
-`verify --gate`). Tests must stay keyless/offline (dummy `FABLE_CODEX_CMD`/`FABLE_ADVISOR_CMD`).
+Before claiming a change works: `python3 tests/run_contracts.py` and
+`python3 tests/run_contracts.py --self-test` must print PASS. Drive the real CLI for anything with
+runtime behaviour (dispatch dry-run, arm freeze + verify without replacement args, gate hook with
+synthetic JSON, `verify` snapshot stability). Tests must stay keyless/offline (dummy
+`FABLE_CODEX_CMD`/`FABLE_ADVISOR_CMD`).
 
 ## Public launch boundary
 
@@ -65,7 +79,7 @@ real CLI for anything with runtime behaviour (dispatch dry-run, gate hook with s
   artifacts. It is not a proven autonomous workforce; do not claim superiority over prior art it
   builds on (steipete/agent-scripts `codex-first`).
 - CI stays keyless and offline unless a maintainer explicitly approves a live-provider gate.
-- Never commit secrets, provider logs, generated `runs/`, or `verdict.json`.
+- Never commit secrets, provider logs, generated `runs/`, `verdict.json`, or `.grokprint/` traces.
 
 ## Public release scrub memory
 

@@ -12,7 +12,7 @@ Two control flows are built on this foundation:
   - advisor  (default): the selected executor/lead is the main loop and consults Fable ON-DEMAND
                         via `ask_fable` (fable_advisor.py / fable_advisor_mcp.py).
   - orchestrator      : Fable is the in-session main loop and dispatches selected bodies
-                        (fable_dispatch.py) behind a hard gate + deterministic verdict.
+                        (fable_dispatch.py) behind a workflow guardrail + deterministic verdict.
 
 This module owns everything shared so the two loops never drift:
   - config toggles + precedence (body/advisor models, effort, fast mode)
@@ -30,7 +30,9 @@ import hashlib
 import json
 import os
 import shlex
+import signal
 import subprocess
+import tempfile
 from pathlib import Path
 
 # --------------------------------------------------------------------------- #
@@ -39,6 +41,11 @@ from pathlib import Path
 CONFIG_HOME = Path(os.environ.get("FABLE_CONFIG_DIR", Path.home() / ".config" / "fable-fuse"))
 GLOBAL_CONFIG = Path(os.environ.get("FABLE_CONFIG", CONFIG_HOME / "config.json"))
 STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
+
+# Owner-only modes for sensitive local artifacts (config, state, prompts, runs).
+OWNER_ONLY_FILE = 0o600
+OWNER_ONLY_DIR = 0o700
+KNOWN_EXECUTORS = frozenset({"codex", "sonnet", "opus", "grok"})
 
 
 # --------------------------------------------------------------------------- #
@@ -56,7 +63,10 @@ STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
 #   sonnet_model  model when executor=sonnet (default claude-sonnet-5)
 #   opus_model    model when executor=opus   (default claude-opus-4-8)
 #   grok_model    model when executor=grok   (default grok-4.5)
-#   FABLE_GROK_YOLO=0 disables the default Grok bypassPermissions body mode
+# Autonomous permission flags are opt-in (default OFF as of 0.2.6):
+#   FABLE_CODEX_YOLO=1 adds Codex --yolo
+#   FABLE_GROK_YOLO=1 adds Grok --permission-mode bypassPermissions
+#   FABLE_GROK_PERMISSION_MODE=<mode> sets an explicit Grok permission mode
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
                "fable_model", "executor", "sonnet_model", "opus_model", "grok_model",
                "grok_effort")
@@ -131,18 +141,72 @@ def _read_json(path: Path) -> dict:
         return {}
 
 
+# --------------------------------------------------------------------------- #
+# Owner-only atomic file helpers (reusable; used by config/state/artifacts)
+# --------------------------------------------------------------------------- #
+def mkdir_owner_only(path: Path | str) -> Path:
+    """Create *path* (and parents) with owner-only directory mode when possible."""
+    p = Path(path)
+    p.mkdir(parents=True, exist_ok=True, mode=OWNER_ONLY_DIR)
+    try:
+        p.chmod(OWNER_ONLY_DIR)
+    except OSError:
+        pass
+    return p
+
+
+def write_text_owner_only(path: Path | str, text: str, mode: int = OWNER_ONLY_FILE) -> Path:
+    """Atomically write *text* to *path* with owner-only permissions (tmp + replace)."""
+    p = Path(path)
+    mkdir_owner_only(p.parent)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{p.name}.",
+        suffix=".tmp",
+        dir=str(p.parent),
+    )
+    try:
+        try:
+            os.fchmod(fd, mode)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp_name, p)
+        try:
+            p.chmod(mode)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return p
+
+
+def write_json_owner_only(path: Path | str, data, mode: int = OWNER_ONLY_FILE) -> Path:
+    """Atomically write JSON (indent=2, sort_keys) with owner-only permissions."""
+    return write_text_owner_only(
+        path,
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        mode=mode,
+    )
+
+
 def load_global_config() -> dict:
     return {k: v for k, v in _read_json(GLOBAL_CONFIG).items() if k in CONFIG_KEYS}
 
 
 def save_global_config(cfg: dict) -> None:
-    GLOBAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_owner_only(GLOBAL_CONFIG.parent)
     merged = {**load_global_config(), **{k: v for k, v in cfg.items() if k in CONFIG_KEYS}}
-    GLOBAL_CONFIG.write_text(json.dumps(merged, indent=2, sort_keys=True) + "\n")
-    try:
-        GLOBAL_CONFIG.chmod(0o600)
-    except OSError:
-        pass
+    write_json_owner_only(GLOBAL_CONFIG, merged)
 
 
 def resolve_config(overrides: dict | None = None, session_id: str | None = None) -> dict:
@@ -186,12 +250,8 @@ def write_state(session_id: str, **patch) -> dict:
         st["config"] = merged_cfg
     st.update(patch)
     p = state_path(session_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(st, indent=2, sort_keys=True) + "\n")
-    try:
-        p.chmod(0o600)
-    except OSError:
-        pass
+    mkdir_owner_only(p.parent)
+    write_json_owner_only(p, st)
     return st
 
 
@@ -240,22 +300,21 @@ def guards_off() -> bool:
 def build_codex_command(cfg: dict) -> list[str]:
     """Build the Codex BODY command from the effective config.
 
-    Proven invocation (per steipete/agent-scripts codex-first): `codex exec --yolo
-    -c model_reasoning_effort=<e> -` — the body may run commands/tests (`--yolo`), the
-    prompt is fed on stdin (`-`, robust for large specs; run_engine handles stdin).
+    Default (0.2.6+): `codex exec -c model_reasoning_effort=<e> -` — inherits Codex's own
+    permission defaults. Prompt is fed on stdin (`-`; run_engine handles stdin).
+    Autonomously elevated permissions require explicit opt-in: FABLE_CODEX_YOLO=1 adds --yolo.
     fast=on swaps effort->fast_effort and (if set) model->fast_model.
     No --model flag is added unless codex_model/fast_model is explicitly set — Codex's own
-    account-aware default keeps working as OpenAI ships new releases, instead of this project
-    chasing (and inevitably getting wrong) a fast-moving version string.
-    Overrides: FABLE_CODEX_CMD (whole command, e.g. `echo` in tests, or a pyolo-fleet shim);
-    FABLE_CODEX_YOLO=0 disables --yolo.
+    account-aware default keeps working as OpenAI ships new releases.
+    Whole-command override: FABLE_CODEX_CMD (trusted compatibility input, e.g. `echo` in tests).
     """
     override = os.environ.get("FABLE_CODEX_CMD")
     if override:
         return shlex.split(override)
     effort = cfg["fast_effort"] if cfg.get("fast") else cfg["codex_effort"]
     model = (cfg.get("fast_model") or cfg["codex_model"]) if cfg.get("fast") else cfg["codex_model"]
-    yolo = ["--yolo"] if _as_bool(os.environ.get("FABLE_CODEX_YOLO"), True) else []
+    # Opt-in only: default False so --yolo is never added unless explicitly enabled.
+    yolo = ["--yolo"] if _as_bool(os.environ.get("FABLE_CODEX_YOLO"), False) else []
     model_flag = ["--model", model] if model else []
     return ["codex", "exec", *yolo, *model_flag, "-c", f"model_reasoning_effort={effort}", "-"]
 
@@ -285,13 +344,20 @@ def build_opus_command(cfg: dict) -> list[str]:
 
 
 def build_grok_command(cfg: dict) -> list[str]:
-    """Build the Grok Build lead/body command. Override with FABLE_GROK_CMD."""
+    """Build the Grok Build lead/body command. Override with FABLE_GROK_CMD.
+
+    Default (0.2.6+): no --permission-mode (inherits Grok's provider defaults).
+    Opt-in autonomy: FABLE_GROK_YOLO=1 adds --permission-mode bypassPermissions.
+    Explicit mode: FABLE_GROK_PERMISSION_MODE=<mode> always wins when set.
+    Prompt transport: managed owner-only temp file via {prompt_file}.
+    """
     override = os.environ.get("FABLE_GROK_CMD")
     if override:
         return shlex.split(override)
     effort = cfg["fast_effort"] if cfg.get("fast") else cfg.get("grok_effort", "high")
     permission = os.environ.get("FABLE_GROK_PERMISSION_MODE")
-    if permission is None and _as_bool(os.environ.get("FABLE_GROK_YOLO"), True):
+    # Opt-in only: default False so bypassPermissions is never added unless enabled.
+    if permission is None and _as_bool(os.environ.get("FABLE_GROK_YOLO"), False):
         permission = "bypassPermissions"
     permission_flags = ["--permission-mode", permission] if permission else []
     return [
@@ -306,22 +372,26 @@ def build_grok_command(cfg: dict) -> list[str]:
 def build_body_command(cfg: dict) -> list[str]:
     """Build the BODY/EXECUTOR command for the selected engine.
 
-    Universal override: FABLE_BODY_CMD / FABLE_EXECUTOR_CMD. Per-engine overrides:
-    FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD / FABLE_GROK_CMD.
-    This is the canonical body command; fable_dispatch uses it so the executor
-    is swappable per-session and permanently via config.
+    Universal override: FABLE_BODY_CMD / FABLE_EXECUTOR_CMD (trusted whole-command inputs).
+    Per-engine overrides: FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD / FABLE_GROK_CMD.
+    Unknown executor values fail closed (ValueError) instead of falling through to Codex.
     """
     override = os.environ.get("FABLE_BODY_CMD") or os.environ.get("FABLE_EXECUTOR_CMD")
     if override:
         return shlex.split(override)
-    executor = (cfg.get("executor") or "codex").lower()
+    executor = (cfg.get("executor") or "codex").lower().strip()
+    if executor == "codex":
+        return build_codex_command(cfg)
     if executor == "sonnet":
         return build_sonnet_command(cfg)
     if executor == "opus":
         return build_opus_command(cfg)
     if executor == "grok":
         return build_grok_command(cfg)
-    return build_codex_command(cfg)
+    raise ValueError(
+        f"unknown executor {executor!r}; expected one of {sorted(KNOWN_EXECUTORS)} "
+        f"(or set FABLE_BODY_CMD / FABLE_EXECUTOR_CMD as a whole-command override)"
+    )
 
 
 def _apply_prompt(cmd: list[str], prompt: str) -> tuple[list[str], str | None]:
@@ -332,41 +402,104 @@ def _apply_prompt(cmd: list[str], prompt: str) -> tuple[list[str], str | None]:
 
 
 def _prepare_prompt_command(cmd: list[str], prompt: str) -> tuple[list[str], str | None, list[str]]:
-    """Prepare a command for execution, including managed temp files for {prompt_file}."""
+    """Prepare a command for execution, including managed owner-only temp files for {prompt_file}."""
     if any("{prompt_file}" in a for a in cmd):
-        import tempfile
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", prefix="fable-prompt-", suffix=".txt", delete=False
-        ) as tmp:
-            tmp.write(prompt)
-            tmp_name = tmp.name
+        fd, tmp_name = tempfile.mkstemp(prefix="fable-prompt-", suffix=".txt")
+        try:
+            try:
+                os.fchmod(fd, OWNER_ONLY_FILE)
+            except OSError:
+                pass
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+                tmp.write(prompt)
+                tmp.flush()
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
         final = [a.replace("{prompt_file}", tmp_name) for a in cmd]
         return final, None, [tmp_name]
     final, stdin = _apply_prompt(cmd, prompt)
     return final, stdin, []
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """Terminate a provider process and its process group (timeout / interrupt path)."""
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=2)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def run_engine(cmd: list[str], prompt: str, timeout: int = 300) -> tuple[int, str, str]:
     """Run a built engine command with the prompt. Returns (returncode, stdout, stderr).
-    Strips FleetFuse-style [artifact:...] lines from stdout for clean handoff."""
+
+    Provider processes run in their own process group (start_new_session=True). On timeout
+    or interruption the whole group is terminated. Strips FleetFuse-style [artifact:...]
+    lines from stdout for clean handoff. Codex keeps stdin transport; Grok keeps managed
+    prompt-file transport via _prepare_prompt_command.
+    """
     import shutil
     if not cmd or not shutil.which(cmd[0]):
         return 127, "", f"{cmd[0] if cmd else '(empty)'} not on PATH"
     cleanup: list[str] = []
+    proc: subprocess.Popen | None = None
     try:
         final, stdin, cleanup = _prepare_prompt_command(cmd, prompt)
-        out = subprocess.run(final, input=stdin, capture_output=True, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return 124, "", f"timeout after {timeout}s"
+        proc = subprocess.Popen(
+            final,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(input=stdin, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            try:
+                proc.communicate(timeout=5)
+            except (subprocess.TimeoutExpired, OSError, ValueError):
+                pass
+            return 124, "", f"timeout after {timeout}s"
+        except KeyboardInterrupt:
+            _kill_process_group(proc)
+            raise
+        text = "\n".join(ln for ln in (stdout or "").splitlines()
+                         if not ln.strip().startswith("[artifact:")).strip()
+        return int(proc.returncode or 0), text, (stderr or "").strip()
     finally:
+        if proc is not None and proc.poll() is None:
+            _kill_process_group(proc)
         for path in cleanup:
             try:
                 Path(path).unlink()
             except OSError:
                 pass
-    text = "\n".join(ln for ln in (out.stdout or "").splitlines()
-                     if not ln.strip().startswith("[artifact:")).strip()
-    return out.returncode, text, (out.stderr or "").strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -417,15 +550,27 @@ def write_artifact(base_dir: Path, run_id: str, label: str, task: str, text: str
     raw = text or ""
     digest = hashlib.sha256(raw.encode()).hexdigest() if raw else ""
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (label or "body"))[:60] or "body"
-    path = Path(base_dir) / f"fable-{run_id}" / f"{safe}.md"
+    run_dir = Path(base_dir) / f"fable-{run_id}"
+    path = run_dir / f"{safe}.md"
     if raw:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
+        mkdir_owner_only(run_dir)
+        write_text_owner_only(
+            path,
             "# FableFuse body artifact\n\n"
             f"- run_id: `{run_id}`\n- label: `{label}`\n- task: {task[:240]}\n"
-            f"- sha256: `{digest}`\n- bytes: {len(raw.encode())}\n\n## Raw output\n\n{raw}\n"
+            f"- sha256: `{digest}`\n- bytes: {len(raw.encode())}\n\n## Raw output\n\n{raw}\n",
         )
     return {"path": str(path) if raw else "", "sha256": digest, "bytes": len(raw.encode())}
+
+
+def write_handoff_card(base_dir: Path, run_id: str, card: dict) -> Path:
+    """Persist a bounded handoff card as owner-only JSON under the run directory."""
+    label = str(card.get("label") or "body")
+    safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in label)[:60] or "body"
+    run_dir = mkdir_owner_only(Path(base_dir) / f"fable-{run_id}")
+    path = run_dir / f"{safe}.handoff.json"
+    write_json_owner_only(path, card)
+    return path
 
 
 def handoff_card(label: str, task: str, text: str, artifact: dict,

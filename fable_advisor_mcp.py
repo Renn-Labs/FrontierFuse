@@ -3,7 +3,7 @@
 
 This is the advisor-mode primitive: it lets a Codex/Sonnet/Opus (or any) executor main loop consult Fable 5
 ON-DEMAND. The executor runs every turn and does the work; it calls `ask_fable` only when guidance
-materially helps, so most tokens stay at the cheaper executor rate (the ClaudeDevs advisor pattern).
+materially helps, reducing coordination calls compared with a controller-led loop.
 
 Register with an executor harness, e.g. Codex:
   codex mcp add fable-advisor -- python3 /abs/path/fable_advisor_mcp.py
@@ -20,11 +20,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fable_advisor
 
 PROTO = "2025-06-18"
+SERVER_VERSION = "0.2.6"
 INSTRUCTIONS = (
     "Consult Fable 5 (the on-demand ADVISOR) for planning, hard design decisions, architecture "
     "tradeoffs, and independent verification. YOU (the selected lead/executor) run the main loop and do all the "
-    "work — call ask_fable only when guidance materially helps, keeping most tokens at the cheaper "
-    "executor rate. Fable advises; it does not execute."
+    "work - call ask_fable only when guidance materially helps. Fable advises; it does not execute."
 )
 TOOLS = [{
     "name": "ask_fable",
@@ -66,7 +66,7 @@ def main() -> int:
             _send({"jsonrpc": "2.0", "id": mid,
                    "result": {"protocolVersion": PROTO, "capabilities": {"tools": {}},
                               "instructions": INSTRUCTIONS,
-                              "serverInfo": {"name": "fable-advisor", "version": "0.1.0"}}})
+                              "serverInfo": {"name": "fable-advisor", "version": SERVER_VERSION}}})
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":

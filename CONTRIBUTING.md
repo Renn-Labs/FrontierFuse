@@ -11,7 +11,7 @@ that way.
 - **Don't fork the contract.** Shared config/state/verdict/command-builder logic lives in
   `fable_common.py`. Import it; don't duplicate it.
 - **Preserve the invariants** in `CLAUDE.md` — especially: the loop closes only on a fresh
-  deterministic GREEN, and the hard gate stays narrowed + kill-switchable.
+  deterministic GREEN, and the workflow guardrail stays narrowed + kill-switchable.
 
 ## Dev loop
 

@@ -1,7 +1,8 @@
 name: offline
 
 # Keyless, offline-only CI. No API keys, no live model calls — mirrors FableFuse's boundary.
-# Runs the stdlib-only contract suite + compile checks on the supported Python range.
+# Runs the stdlib-only contract aggregate (tests/run_contracts.py) + compile checks on the
+# supported Python range (3.10, 3.12).
 
 on:
   push:
@@ -29,7 +30,34 @@ jobs:
         run: python -m compileall -q fable_common.py fable_advisor.py fable_advisor_mcp.py fable_dispatch.py fable_verify.py fable_scrub.py hooks tests
       - name: Foundation smoke (no keys)
         run: python fable_common.py
-      - name: Offline contract suite
-        run: python tests/fable_contracts.py
-      - name: Doctor (offline-ok)
-        run: python fable_dispatch.py doctor || true
+      - name: Offline contract aggregate
+        run: python tests/run_contracts.py
+      - name: Runner self-test
+        run: python tests/run_contracts.py --self-test
+      - name: Doctor offline smoke
+        # Doctor never contacts live providers. Bare GitHub runners lack codex/
+        # claude/grok on PATH, so unstubbed doctor exits 1 (NOT READY). Force
+        # universal body + advisor + grok stubs to `echo` (always on PATH) and
+        # isolate config/state so home/user settings cannot select a live CLI.
+        # Require READY/exit 0 — never swallow doctor failures.
+        env:
+          FABLE_BODY_CMD: echo
+          FABLE_ADVISOR_CMD: echo
+          FABLE_GROK_CMD: echo
+          FABLE_CONFIG_DIR: ${{ runner.temp }}/fable-config
+          FABLE_STATE_DIR: ${{ runner.temp }}/fable-state
+          FABLE_RUNS_DIR: ${{ runner.temp }}/fable-runs
+        run: |
+          set +e
+          out=$(python fable_dispatch.py doctor 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -qE 'READY|NOT READY' \
+            || { echo "doctor did not print READY/NOT READY status"; exit 1; }
+          if [ "$rc" -ne 0 ]; then
+            echo "doctor exited $rc; expected 0 with FABLE_BODY_CMD=echo stubs"
+            exit 1
+          fi
+          printf '%s\n' "$out" | grep -q 'READY' \
+            || { echo "doctor did not report READY under offline stubs"; exit 1; }

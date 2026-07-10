@@ -48,7 +48,8 @@ OPAQUE_TOKEN = re.compile(r"\b[A-Za-z0-9+/_\-]{32,}={0,2}\b")
 SECRET_WORD = re.compile(r"(?i)(secret|token|api[_-]?key|password|passwd|credential|private)")
 
 TRACKED_FORBIDDEN_PATHS = re.compile(
-    r"(^runs/|^verdict\.json$|(^|/)__pycache__/|\.pyc$|^\.omc/|^\.omx/|^\.buildlog/|"
+    r"(^runs/|^verdict\.json$|(^|/)__pycache__/|\.pyc$|^\.omc/|^\.omx/|^\.grokprint/|"
+    r"^\.buildlog/|"
     r"provider.*log|transcript)"
 )
 

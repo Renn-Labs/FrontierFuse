@@ -9,9 +9,9 @@
     {
       "name": "fablefuse",
       "source": "./",
-      "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow.",
-      "version": "0.2.5"
+      "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow. Advisor (executor-led) and orchestrator (controller-led workflow guardrail) modes.",
+      "version": "0.2.6"
     }
   ],
-  "version": "0.2.5"
+  "version": "0.2.6"
 }

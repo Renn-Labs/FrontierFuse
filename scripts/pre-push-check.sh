@@ -44,7 +44,7 @@ if [[ "$ALLOW_DIRTY" != "1" ]] && [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 bad_tracked="$(
-  git ls-files | grep -E '(^runs/|^verdict\.json$|(^|/)__pycache__/|\.pyc$|^\.omc/|^\.omx/|^\.buildlog/)' || true
+  git ls-files | grep -E '(^runs/|^verdict\.json$|(^|/)__pycache__/|\.pyc$|^\.omc/|^\.omx/|^\.grokprint/|^\.buildlog/)' || true
 )"
 [[ -z "$bad_tracked" ]] || fail "generated/private files are tracked: $bad_tracked"
 
@@ -70,6 +70,11 @@ if market.get("version") != version:
 if plugin_entry.get("version") != version:
     errors.append("marketplace plugin entry version does not match plugin.json")
 
+mcp_source = Path("fable_advisor_mcp.py").read_text()
+mcp_version = re.search(r'^SERVER_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', mcp_source, re.MULTILINE)
+if not mcp_version or mcp_version.group(1) != version:
+    errors.append("fable_advisor_mcp.py SERVER_VERSION does not match plugin.json")
+
 changelog = Path("CHANGELOG.md").read_text()
 if f"## [{version}] - " not in changelog:
     errors.append(f"CHANGELOG.md is missing a dated {version} entry")
@@ -79,10 +84,37 @@ for needle in (
     "/plugin marketplace add Renn-Labs/FableFuse",
     "/plugin install fablefuse@fablefuse",
     "/reload-plugins",
+    "fable-dispatch arm --gate",
+    "fable-dispatch verify",
     version,
 ):
     if needle not in readme:
         errors.append(f"README.md install/upgrade docs are missing {needle!r}")
+
+if "gpt-5.6" in readme.lower() and "limited preview" not in readme.lower():
+    errors.append("README.md mentions GPT-5.6 without labeling its limited-preview availability")
+
+truth_surface = "\n".join(
+    Path(path).read_text()
+    for path in (
+        "README.md",
+        "SECURITY.md",
+        "docs/DESIGN.md",
+        "skills/fablefuse/SKILL.md",
+        "skills/fablefuse-config/SKILL.md",
+        ".claude-plugin/plugin.json",
+        ".claude-plugin/marketplace.json",
+        "hooks/hooks.json",
+        "settings.hooks.snippet.json",
+        "CONTRIBUTING.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs/PUBLIC_RELEASE_CHECKLIST.md",
+    )
+).lower()
+for stale_claim in ("hard gate", "hard-gated", "cost-optimal"):
+    if stale_claim in truth_surface:
+        errors.append(f"public product surface still contains stale claim {stale_claim!r}")
 
 workflow = Path(".github/workflows/offline.yml").read_text()
 branch = os.environ["BRANCH"]
@@ -131,13 +163,13 @@ step "public release scrub"
 python3 scripts/public-release-scrub.py --push-range
 
 step "market model names"
-if git grep -n -E 'claude-opus-5|Opus 5|grok-5|Grok 5' -- \
+if git grep -n -E 'claude-opus-5|Opus 5|grok-5|Grok 5|gpt-5\.6-soul|GPT-5\.6 Soul' -- \
   '*.py' '*.md' '*.json' '*.sh' \
   ':!scripts/pre-push-check.sh' \
   ':!CHANGELOG.md' >/tmp/fable-model-name-grep.$$; then
   cat /tmp/fable-model-name-grep.$$ >&2
   rm -f /tmp/fable-model-name-grep.$$
-  fail "found unverified future model references; current official defaults are claude-opus-4-8 and grok-4.5"
+  fail "found an unverified or misspelled model reference"
 fi
 rm -f /tmp/fable-model-name-grep.$$
 
@@ -149,8 +181,11 @@ python3 -m compileall -q \
   fable_common.py fable_advisor.py fable_advisor_mcp.py fable_dispatch.py \
   fable_verify.py fable_scrub.py hooks tests
 
-step "offline contracts"
-python3 tests/fable_contracts.py
+step "offline contracts (aggregate)"
+python3 tests/run_contracts.py
+
+step "contract runner self-test"
+python3 tests/run_contracts.py --self-test
 
 step "plugin validation"
 claude plugin validate .
@@ -174,7 +209,23 @@ grok_smoke="$(
 printf '%s\n' "$grok_smoke" | grep -q 'grok --model grok-4.5' || fail "grok smoke did not select grok-4.5"
 printf '%s\n' "$grok_smoke" | grep -q -- '--prompt-file <prompt-file>' || fail "grok smoke did not use prompt-file"
 
-step "doctor"
-python3 fable_dispatch.py doctor || true
+# Doctor never hits live providers. Exit 1 means the configured body CLI is not
+# on PATH (NOT READY) — common on partial installs and not a release-scrub
+# failure. Exit 0 (READY) or 1 (NOT READY) are accepted; any other code fails.
+# Output must include an explicit readiness line so a silent crash cannot pass.
+step "doctor (readiness; exit 1 = body CLI missing, non-blocking)"
+set +e
+doctor_out="$(python3 fable_dispatch.py doctor 2>&1)"
+doctor_rc=$?
+set -e
+printf '%s\n' "$doctor_out"
+printf '%s\n' "$doctor_out" | grep -qE 'READY|NOT READY' \
+  || fail "doctor did not print READY/NOT READY status"
+if [[ "$doctor_rc" -ne 0 && "$doctor_rc" -ne 1 ]]; then
+  fail "doctor exited with unexpected code $doctor_rc (expected 0=READY or 1=NOT READY)"
+fi
+if [[ "$doctor_rc" -eq 1 ]]; then
+  echo "pre-push: doctor NOT READY (body CLI missing) — continuing; offline contracts already passed"
+fi
 
 step "all checks passed"

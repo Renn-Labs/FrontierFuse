@@ -24,8 +24,8 @@ any public exposure.
 ## Public Scrub Rules
 
 - Never print matched secret values. Report only file, line, commit scope, and finding type.
-- Keep `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`, `.buildlog/`, local
-  config/state, credentials, and private absolute paths out of git.
+- Keep `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`, `.grokprint/`,
+  `.buildlog/`, local config/state, credentials, and private absolute paths out of git.
 - If scanner output points at a real credential, rotate or revoke it before doing anything else.
 - If the credential is in local history that has not been pushed publicly, scrub/rewrite history
   before pushing. Do not rewrite published history without maintainer approval.
@@ -40,7 +40,8 @@ any public exposure.
 - Verify any current-market model IDs or availability claims against official provider docs. Do not
   infer unreleased family names; current Opus executor defaults must remain `claude-opus-4-8` unless
   official Anthropic docs say otherwise. Current Grok executor defaults must remain `grok-4.5`
-  unless official xAI docs say otherwise.
+  unless official xAI docs say otherwise. GPT-5.6 preview pins are limited to exact verified IDs
+  `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` for entitled organizations.
 - Validate plugin metadata with `claude plugin validate .`.
 - Run keyless/offline tests only unless a maintainer explicitly approves live-provider validation.
 

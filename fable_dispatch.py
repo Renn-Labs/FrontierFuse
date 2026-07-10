@@ -9,8 +9,9 @@ Subcommands:
   dispatch "task" [...]        run one selected body/lead executor (or several with --parallel)
   --parallel / -p t...         fan out N concurrent bodies (cap FABLE_MAX_PARALLEL, default 4)
   --fanout tasks.json          fan out tasks from a JSON list (strings or {"task": ...})
-  arm | disarm | done          toggle the per-session hard-gate marker
-  verify --gate "pytest -q"     run a deterministic acceptance gate -> verdict.json
+  arm --gate "pytest -q"       arm and freeze a host-approved acceptance gate
+  disarm | done                explicitly override, or close on snapshot-bound GREEN
+  verify                       run the frozen gate while armed -> verdict.json
   config [--executor codex|sonnet|opus|grok --model --sonnet-model --opus-model --grok-model --effort --fast on|off --global]
                                 print/persist toggles
   doctor                       readiness table
@@ -80,8 +81,13 @@ def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, d
     rc, out, err = fc.run_engine(cmd, task, timeout=timeout)
     text = out or err
     artifact = fc.write_artifact(fc.RUNS_DIR, run_id, label, task, text)
-    return fc.handoff_card(label, task, text, artifact, ok=(rc == 0),
+    card = fc.handoff_card(label, task, text, artifact, ok=(rc == 0),
                            note="" if rc == 0 else f"exit {rc}")
+    try:
+        fc.write_handoff_card(fc.RUNS_DIR, run_id, card)
+    except OSError:
+        pass  # disk card is best-effort; stdout JSON remains the primary handoff
+    return card
 
 
 def cmd_dispatch(args) -> int:
@@ -95,8 +101,14 @@ def cmd_dispatch(args) -> int:
         return 2
 
     cfg = fc.resolve_config(overrides=_overrides(args), session_id=SESSION_ID)
-    cmd = fc.build_body_command(cfg)
+    try:
+        cmd = fc.build_body_command(cfg)
+    except ValueError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 2
     run_id = fc.new_run_id()
+    if not args.dry_run:
+        fc.mkdir_owner_only(fc.RUNS_DIR / f"fable-{run_id}")
     if args.budget_usd:
         print(f"# soft budget: ${args.budget_usd:.2f} (informational; provider billing is external)",
               file=sys.stderr)
@@ -125,16 +137,49 @@ def cmd_dispatch(args) -> int:
 # --------------------------------------------------------------------------- #
 # state toggles
 # --------------------------------------------------------------------------- #
-def cmd_arm(_args) -> int:
-    fc.write_state(SESSION_ID, armed=True)
-    print(f"armed (session {SESSION_ID}) — hard gate active. Delegate execution to the selected body; "
-          f"finish only on a fresh GREEN verdict. Kill-switch: FABLE_GUARDS_OFF=1.")
+def cmd_arm(args) -> int:
+    """Arm the workflow guardrail and freeze the host-approved verification command."""
+    approved_gate = None
+    if args.gate:
+        import fable_verify
+
+        try:
+            gate_argv = fable_verify.parse_gate_argv(args.gate)
+        except (TypeError, ValueError) as exc:
+            print(f"arm refused: invalid verification command: {exc}", file=sys.stderr)
+            return 2
+        workspace = str(Path(args.cwd or ".").resolve())
+        if not fable_verify.is_git_worktree(workspace):
+            print(
+                "arm refused: a closable frozen verifier requires --cwd (or the current directory) "
+                "to be inside a Git worktree",
+                file=sys.stderr,
+            )
+            return 2
+        approved_gate = {
+            "gate": args.gate,
+            "argv": gate_argv,
+            "cwd": workspace,
+        }
+    fc.write_state(SESSION_ID, armed=True, approved_gate=approved_gate, verdict=None)
+    if approved_gate:
+        print(
+            f"armed (session {SESSION_ID}) - workflow guardrail active with a frozen verification "
+            "command. Delegate execution to the selected body, run `fable-dispatch verify`, and "
+            "finish only on a snapshot-bound GREEN. Kill-switch: FABLE_GUARDS_OFF=1."
+        )
+    else:
+        print(
+            f"armed (session {SESSION_ID}) - workflow guardrail active, but no verification command "
+            "was approved. Disarm and re-arm with `--gate \"<tests/build/lint>\"` before delegating "
+            "if the model must be able to verify and finish. Kill-switch: FABLE_GUARDS_OFF=1."
+        )
     return 0
 
 
 def cmd_disarm(_args) -> int:
-    fc.write_state(SESSION_ID, armed=False)
-    print(f"disarmed (session {SESSION_ID}) — hard gate off.")
+    fc.write_state(SESSION_ID, armed=False, approved_gate=None)
+    print(f"disarmed (session {SESSION_ID}) - workflow guardrail off.")
     return 0
 
 
@@ -142,15 +187,24 @@ def cmd_done(_args) -> int:
     """Disarm ONLY on a fresh GREEN verdict — the loop's core invariant. `done` without one
     leaves the gate armed (use `disarm` explicitly to override, which is a distinct, deliberate
     escape hatch — not something `done` does silently)."""
+    import fable_verify
+
     st = fc.read_state(SESSION_ID)
-    fresh = fc.verdict_is_fresh_green(st.get("verdict"), st.get("last_dispatch_ts", 0))
+    approved = st.get("approved_gate") if isinstance(st.get("approved_gate"), dict) else {}
+    fresh = fable_verify.verdict_is_snapshot_fresh_green(
+        st.get("verdict"),
+        st.get("last_dispatch_ts", 0),
+        session_id=SESSION_ID,
+        cwd=approved.get("cwd"),
+        approved_gate=approved,
+    )
     if not fresh:
-        print("done — REFUSED: no fresh GREEN verdict recorded for the last dispatch. Gate "
-              "stays armed. Run `fable-dispatch verify --gate \"<cmd>\"` until GREEN, or "
-              "`fable-dispatch disarm` to override deliberately.", file=sys.stderr)
+        print("done - REFUSED: no fresh snapshot-bound GREEN verdict recorded for the last "
+              "dispatch. Guardrail stays armed. Run `fable-dispatch verify` until GREEN, or "
+              "`fable-dispatch disarm` from the host to override deliberately.", file=sys.stderr)
         return 1
-    fc.write_state(SESSION_ID, armed=False)
-    print("done — fresh GREEN verdict on record. Gate disarmed.")
+    fc.write_state(SESSION_ID, armed=False, approved_gate=None)
+    print("done - fresh snapshot-bound GREEN still matches the workspace. Guardrail disarmed.")
     return 0
 
 
@@ -159,7 +213,33 @@ def cmd_done(_args) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_verify(args) -> int:
     import fable_verify
-    v = fable_verify.run_gate(args.gate, session_id=SESSION_ID, cwd=args.cwd)
+
+    st = fc.read_state(SESSION_ID)
+    approved = st.get("approved_gate") if isinstance(st.get("approved_gate"), dict) else None
+    gate = args.gate
+    cwd = args.cwd or "."
+    if st.get("armed"):
+        if not approved or not isinstance(approved.get("argv"), list):
+            print(
+                "verify refused: the armed session has no frozen verification command; disarm and "
+                "re-arm with `fable-dispatch arm --gate \"<command>\"`.",
+                file=sys.stderr,
+            )
+            return 2
+        if gate or args.cwd:
+            print(
+                "verify refused: armed verification uses the gate and workspace frozen at arm "
+                "time; omit --gate and --cwd",
+                file=sys.stderr,
+            )
+            return 2
+        gate = str(approved.get("gate") or "")
+        cwd = str(approved.get("cwd") or ".")
+    if not gate:
+        print("verify requires --gate \"<command>\" when the session is not armed", file=sys.stderr)
+        return 2
+
+    v = fable_verify.run_gate(gate, session_id=SESSION_ID, cwd=cwd)
     print(json.dumps({k: v[k] for k in ("result", "gate", "exit_code", "diff_sha", "paths", "ts")},
                      indent=2))
     return 0 if v["result"] == "GREEN" else 1
@@ -178,6 +258,13 @@ def cmd_config(args) -> int:
     if args.fast is not None:
         patch["fast"] = (args.fast == "on")
     if args.executor is not None:
+        if args.executor not in fc.KNOWN_EXECUTORS:
+            print(
+                f"config refused: unknown executor {args.executor!r}; "
+                f"expected one of {sorted(fc.KNOWN_EXECUTORS)}",
+                file=sys.stderr,
+            )
+            return 2
         patch["executor"] = args.executor
     if args.sonnet_model is not None:
         patch["sonnet_model"] = args.sonnet_model
@@ -194,7 +281,11 @@ def cmd_config(args) -> int:
     print(json.dumps(cfg, indent=2, sort_keys=True))
     scope = "global" if args.glob else "session" if patch else "effective"
     print(f"# scope: {scope}", file=sys.stderr)
-    print("body cmd :", " ".join(fc.build_body_command(cfg)), file=sys.stderr)
+    try:
+        body_cmd = " ".join(fc.build_body_command(cfg))
+    except ValueError as exc:
+        body_cmd = f"<unavailable: {exc}>"
+    print("body cmd :", body_cmd, file=sys.stderr)
     print("brain cmd:", " ".join(fc.build_fable_command(cfg)), file=sys.stderr)
     return 0
 
@@ -204,7 +295,12 @@ def cmd_config(args) -> int:
 # --------------------------------------------------------------------------- #
 def cmd_doctor(_args) -> int:
     cfg = fc.resolve_config(session_id=SESSION_ID)
-    body_cmd = fc.build_body_command(cfg)
+    body_err = None
+    try:
+        body_cmd = fc.build_body_command(cfg)
+    except ValueError as exc:
+        body_cmd = []
+        body_err = str(exc)
     fable_cmd = fc.build_fable_command(cfg)
     settings = Path.home() / ".claude" / "settings.json"
     manual_hooks_installed = settings.is_file() and "fable_gate.py" in settings.read_text()
@@ -226,8 +322,10 @@ def cmd_doctor(_args) -> int:
                        "`/plugin install fablefuse@fablefuse` (or `install-hooks` for the manual path)")
 
     grok_cmd = fc.build_grok_command(cfg)
+    body_info = body_err if body_err else " ".join(body_cmd)
+    body_ok = (not body_err) and bool(body_cmd and shutil.which(body_cmd[0]))
     rows = [
-        (f"{cfg['executor']} body CLI", bool(shutil.which(body_cmd[0])), " ".join(body_cmd)),
+        (f"{cfg['executor']} body CLI", body_ok, body_info),
         ("grok build CLI", bool(shutil.which(grok_cmd[0])), " ".join(grok_cmd)),
         ("fable brain CLI", bool(shutil.which(fable_cmd[0])), " ".join(fable_cmd)),
         ("plugin manifest", plugin_manifest_present, str(HERE / ".claude-plugin" / "plugin.json")),
@@ -237,7 +335,7 @@ def cmd_doctor(_args) -> int:
     print("FableFuse doctor\n")
     for label, ok, info in rows:
         print(f"  {mark(ok)}  {label:22} {info}")
-    ready = bool(shutil.which(body_cmd[0]))
+    ready = body_ok
     print(f"\n{'READY' if ready else 'NOT READY'} — need the {cfg['executor']} body CLI on PATH for "
           f"live runs (offline tests/dry-run work regardless).")
     return 0 if ready else 1
@@ -245,7 +343,7 @@ def cmd_doctor(_args) -> int:
 
 def _mkdir_ok(p: Path) -> bool:
     try:
-        p.mkdir(parents=True, exist_ok=True)
+        fc.mkdir_owner_only(p)
         return os.access(p, os.W_OK)
     except OSError:
         return False
@@ -344,8 +442,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sonnet-model", dest="sonnet_model", default=None)
     ap.add_argument("--opus-model", dest="opus_model", default=None)
     ap.add_argument("--grok-model", dest="grok_model", default=None)
-    ap.add_argument("--gate", default="", help="verify: acceptance command")
-    ap.add_argument("--cwd", default=".", help="verify: working dir")
+    ap.add_argument("--gate", default="", help="arm/verify: host-approved acceptance command")
+    ap.add_argument("--cwd", default=None, help="arm/verify: verification working directory")
     ap.add_argument("--global", dest="glob", action="store_true", help="config: persist globally")
     return ap
 
@@ -361,9 +459,6 @@ def main(argv: list[str] | None = None) -> int:
         "verify": cmd_verify, "config": cmd_config, "doctor": cmd_doctor,
         "install-hooks": cmd_install_hooks, "uninstall-hooks": cmd_uninstall_hooks,
     }
-    if sub == "verify" and not args.gate:
-        print("verify requires --gate \"<command>\"", file=sys.stderr)
-        return 2
     return handlers[sub](args)
 
 

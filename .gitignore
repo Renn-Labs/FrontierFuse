@@ -13,6 +13,7 @@ venv/
 # local orchestration/session state (lives under ~/.config/fable-fuse; never committed)
 .omc/
 .omx/
+.grokprint/
 
 # raw build-in-public journal; local source material, not public release history
 .buildlog/

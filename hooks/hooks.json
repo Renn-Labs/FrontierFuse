@@ -1,5 +1,5 @@
 {
-  "description": "FableFuse orchestrator-mode hard gate. Inert unless a session is armed via `fable-dispatch arm`; honours FABLE_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1.",
+  "description": "FableFuse orchestrator-mode workflow guardrail + frozen snapshot-bound verifier. Inert unless a session is armed via `fable-dispatch arm --gate \"…\"` (host freezes verifier argv/cwd); honours FABLE_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1. Not a sandbox.",
   "hooks": {
     "PreToolUse": [
       {
