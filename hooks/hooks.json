@@ -1,5 +1,5 @@
 {
-  "description": "FableFuse orchestrator-mode workflow guardrail + frozen snapshot-bound verifier. Inert unless a session is armed via `fable-dispatch arm --gate \"…\"` (host freezes verifier argv/cwd); honours FABLE_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1. Not a sandbox.",
+  "description": "FrontierFuse orchestrator-mode workflow guardrail + frozen snapshot-bound verifier. Inert unless a session is armed via `frontier-dispatch arm --gate \"…\"` (host freezes verifier argv/cwd); honours FRONTIER_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1. Not a sandbox.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/fable_gate.py",
+            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/frontier_gate.py",
             "timeout": 10
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/fable_verify_gate.py",
+            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/frontier_verify_gate.py",
             "timeout": 10
           }
         ]

@@ -1,23 +1,24 @@
 {
-  "name": "fablefuse",
-  "version": "0.2.6",
-  "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow. Advisor mode (executor-led, lower coordination overhead) and orchestrator mode (controller-led with a workflow guardrail and snapshot-bound deterministic verdict).",
+  "name": "frontierfuse",
+  "version": "0.3.0",
+  "description": "Pair a selectable Fable, GPT, Claude, Grok, or Gemini frontier model with a separate Codex, Claude, Grok, or Gemini executor. Includes advisor and verified orchestrator profiles.",
   "author": {
     "name": "Renn Labs"
   },
-  "repository": "https://github.com/Renn-Labs/FableFuse",
-  "homepage": "https://github.com/Renn-Labs/FableFuse",
+  "repository": "https://github.com/Renn-Labs/FrontierFuse",
+  "homepage": "https://github.com/Renn-Labs/FrontierFuse",
   "license": "MIT",
   "keywords": [
     "claude-code",
     "plugin",
     "fable",
     "codex",
+    "gemini",
     "orchestration",
     "agentic-ai"
   ],
   "skills": [
-    "./skills/fablefuse/",
-    "./skills/fablefuse-config/"
+    "./skills/frontierfuse/",
+    "./skills/frontierfuse-config/"
   ]
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fable_verify.py — deterministic gate runner for FableFuse orchestrator mode.
+"""frontier_verify.py — deterministic gate runner for FrontierFuse orchestrator mode.
 
 The brain (Fable) never closes a loop on a prose "GREEN". It must run a real EXTERNAL gate
 (tests / build / lint / repro) through this module. The gate's exit code — not a model's
@@ -23,17 +23,17 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import fable_common as fc
+import frontier_common as fc
 
-GATE_TIMEOUT = int(os.environ.get("FABLE_GATE_TIMEOUT", "600"))
+GATE_TIMEOUT = int(os.environ.get("FRONTIER_GATE_TIMEOUT", "600"))
 
 # Versioned snapshot / verdict schema for 0.2.6 snapshot-bound verification.
 SNAPSHOT_VERSION = 1
 VERDICT_SCHEMA_VERSION = 2  # v1 = legacy make_verdict fields only; v2 = snapshot-bound
-MAX_UNTRACKED_FILES = int(os.environ.get("FABLE_SNAPSHOT_MAX_UNTRACKED", "200"))
-MAX_UNTRACKED_BYTES = int(os.environ.get("FABLE_SNAPSHOT_MAX_FILE_BYTES", str(1_048_576)))
+MAX_UNTRACKED_FILES = int(os.environ.get("FRONTIER_SNAPSHOT_MAX_UNTRACKED", "200"))
+MAX_UNTRACKED_BYTES = int(os.environ.get("FRONTIER_SNAPSHOT_MAX_FILE_BYTES", str(1_048_576)))
 # Metadata (path+size+mtime) for untracked files beyond the full-content hash cap.
-MAX_UNTRACKED_META = int(os.environ.get("FABLE_SNAPSHOT_MAX_UNTRACKED_META", "5000"))
+MAX_UNTRACKED_META = int(os.environ.get("FRONTIER_SNAPSHOT_MAX_UNTRACKED_META", "5000"))
 _OVERSIZED_SAMPLE = 65536
 _GATE_PUNCTUATION = "();<>|&`"
 # Verifier-owned artifacts written into cwd after the final snapshot is taken; including them
@@ -658,7 +658,7 @@ def _main(argv: list[str] | None = None) -> int:
         description="Run a deterministic acceptance gate and stamp a snapshot-bound verdict."
     )
     ap.add_argument("--gate", required=True, help='acceptance command, e.g. "pytest -q"')
-    ap.add_argument("--session", default=os.environ.get("FABLE_SESSION_ID", "default"))
+    ap.add_argument("--session", default=os.environ.get("FRONTIER_SESSION_ID", "default"))
     ap.add_argument("--cwd", default=".")
     ap.add_argument(
         "--legacy-shell",
@@ -669,7 +669,7 @@ def _main(argv: list[str] | None = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
-    env_legacy = str(os.environ.get("FABLE_VERIFY_LEGACY_SHELL") or "").strip().lower()
+    env_legacy = str(os.environ.get("FRONTIER_VERIFY_LEGACY_SHELL") or "").strip().lower()
     legacy = bool(args.legacy_shell) or env_legacy in {"1", "true", "yes", "on", "y"}
     v = run_gate(args.gate, session_id=args.session, cwd=args.cwd, legacy_shell=legacy)
     print(

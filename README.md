@@ -1,333 +1,337 @@
-# FableFuse
+# FrontierFuse
 
-**Fable 5 (brain/advisor) + a swappable lead/body model, fused into one Claude Code workflow.**
+**Combine a selectable frontier model with a separate coding executor.**
 
-FableFuse pairs a frontier *advisor/planner* model (Claude **Fable 5**) with a swappable
-**executor/lead** (**Codex**, **Sonnet 5**, **Opus 4.8**, or **Grok 4.5**) and gives you two
-compatibility modes:
+FrontierFuse lets users choose:
 
-| Mode | Who drives | What Fable does |
-|-|-|-|
-| **advisor** (default) | executor/lead main loop | on-demand consultant via `ask_fable` |
-| **orchestrator** | Fable as controller | plans, routes via `fable-dispatch`, verifies, synthesizes |
+1. A **profile**: executor-led `advisor` or frontier-led `orchestrator`.
+2. A **frontier provider/model**: Codex/OpenAI, Claude, Grok, or Gemini.
+3. An **executor provider/model**: Codex, Claude, Grok, or Gemini.
 
-Advisor mode has **lower coordination overhead** (the executor runs; Fable is called only when you
-ask). Actual token use and cost still depend on prompts, retries, and provider pricing — not a
-fixed savings claim.
+Fable 5 remains the recommended Claude frontier model and part of the product story, but it is no
+longer hard-wired. A user can pair Fable, GPT-5.6 Sol/Terra/Luna, Claude Opus/Sonnet, Grok, and
+Gemini models in either supported role when the relevant provider CLI exposes the exact model ID.
 
-The shipped package is a **Claude Code plugin**. Codex can use the advisor MCP and the same core
-CLIs manually; there is **no published Codex or Grok plugin package** yet.
+FrontierFuse is packaged as a Claude Code plugin. Codex and Grok Build can use the same stdlib CLI
+and `ask_frontier` MCP server from a shared checkout. Version: **0.3.0**.
 
-Harness binding matters: a plugin cannot replace the model already driving its host session.
-Select the desired host model in Claude Code, Codex, or Grok first; FableFuse can independently
-select only models it launches through a managed adapter. Controller-led mode therefore requires
-a Fable-capable Claude host today.
+## Profiles
 
-FableFuse is a companion to [FleetFuse](https://github.com/Renn-Labs/FleetFuse); it copies a couple
-of FleetFuse's small helpers so it stands alone (see `NOTICE`).
+```text
+advisor (default)
+  user -> executor -> frontier advice (only when needed) -> executor -> tests
 
-> Status: early. The offline contract suite is green and the CLIs are verified end-to-end, but this
-> is young software. Treat model output as advisory and verify it — that is the point of the
-> deterministic gate below.
-
----
-
-## Two modes
-
-```
-advisor (default)                              orchestrator
-  Executor ── main loop, every turn              Fable ── controller (brain)
-     │  ↑ ask_fable(question)                       │  ↓ fable-dispatch "<spec>"
-     │  ↓ advice                                  Codex/Sonnet/Opus/Grok body
-  Fable ── on-demand advisor                        │  ↑ bounded card + raw artifact
-                                                  Host-frozen gate → snapshot-bound GREEN
-                                                    └─ workflow guardrail (not a hard sandbox)
+orchestrator
+  user -> current host/frontier controller -> executor bodies -> synthesis -> frozen verifier
 ```
 
-| Concern | advisor | orchestrator |
+| Concern | `advisor` | `orchestrator` |
 |-|-|-|
-| Main loop | executor/lead | Fable (controller) |
-| Coordination | lower (on-demand advice) | higher (dispatch + verify loop) |
-| Token/call impact | most work on the lead; Fable only when consulted | Fable turns + body runs + verify |
-| Enforcement | none from FableFuse | workflow guardrail while armed |
+| Driver | selected executor | current host/frontier controller |
+| Frontier model | on-demand consultant | planner, router, reviewer, synthesizer |
+| Executor | plans, edits, and uses tools | runs dispatched work bodies |
+| Typical calls | executor calls plus occasional advice | controller turns plus body calls and verification |
+| Typical token impact | lower frontier usage | higher frontier usage for stronger coordination |
+| Guardrail | none | Claude Code workflow guardrail while armed |
 
-Numbers depend on your prompts, retry rate, and pricing. Do not treat the table as a benchmark.
+Actual tokens, latency, and cost depend on prompt size, retries, provider pricing, and model access.
+The table is a qualitative guide, not a benchmark.
 
----
+The host harness owns the model already driving its current conversation. FrontierFuse cannot
+replace that running host model; it configures managed frontier calls, managed executor calls, and
+their role contract.
+
+## Supported Providers
+
+| Provider key | CLI | Example models |
+|-|-|-|
+| `codex` | `codex` | account default, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, older GPT models |
+| `claude` | `claude` | `claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`, previous Claude models |
+| `grok` | `grok` | `grok-4.5` plus models discovered from the installed Grok Build CLI |
+| `gemini` | `gemini` | `gemini-3.5-flash`, `gemini-3.1-pro-preview`, Gemini 2.5 models |
+
+Sonnet and Opus are Claude **models**, not executor/provider names. Use `--executor claude` and
+choose the model separately.
+
+List the maintained catalog and account-aware local discoveries:
+
+```bash
+frontier-dispatch models
+frontier-dispatch models --provider grok
+frontier-dispatch models --provider gemini --json
+```
+
+The static catalog uses official provider references. It accepts a custom exact ID for
+account-specific availability, but never invents one. This checkout's Grok CLI exposes
+`grok-4.5`; an unverified Grok version is not added merely because it was requested.
+
+Sources: [OpenAI models](https://developers.openai.com/api/docs/models/all),
+[Anthropic models](https://platform.claude.com/docs/en/about-claude/models/overview), and
+[Gemini models](https://ai.google.dev/gemini-api/docs/models).
 
 ## Prerequisites
 
-| Need | Why |
+| Requirement | Why |
 |-|-|
-| **Python 3.10+** | shipped modules are stdlib-only |
-| **Git worktree** | required for a closable controller-led verification loop |
-| **Claude Code** | primary install surface (plugin marketplace) |
-| **Body CLI for the executor you select** | **Codex CLI** (`codex`), **Claude CLI** (`claude`) for Sonnet/Opus, and/or **Grok Build CLI** (`grok`) for Grok 4.5 |
-| **Fable-capable `claude` access** | advisor/brain calls (`FABLE_MODEL`, default `claude-fable-5`) |
-| Provider auth for live runs | offline tests/doctor/dry-run need no keys |
+| Python 3.10+ | Runtime and tests are stdlib-only |
+| Git worktree | Required for a closable snapshot-bound orchestrator loop |
+| Claude Code | Native plugin and slash-command surface |
+| Selected provider CLIs | Managed frontier and executor calls |
+| Provider authentication | Live inference only; tests, dry-run, and offline doctor are keyless |
 
----
+## Install
 
-## Install (Claude Code marketplace)
+### Claude Code Plugin
 
-Inside a Claude Code session:
+Inside Claude Code:
 
-```
-/plugin marketplace add Renn-Labs/FableFuse
-/plugin install fablefuse@fablefuse
-```
-
-Then **reload or restart** Claude Code so skills and hooks load. After install you get `/fablefuse`
-and `/fablefuse-config`. Orchestrator workflow-guardrail hooks register but stay **inert** until
-`fable-dispatch arm`; they honour `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`.
-
-### Update
-
-```
-/plugin marketplace update fablefuse
-/plugin update fablefuse@fablefuse
+```text
+/plugin marketplace add Renn-Labs/FrontierFuse
+/plugin install frontierfuse@frontierfuse
 ```
 
-**Restart Claude Code after a plugin update** so hooks and skills pick up the new version.
+Restart Claude Code after installation. The plugin provides `/frontierfuse`,
+`/frontierfuse-config`, `ask_frontier`, and guarded orchestrator hooks. Hooks remain inert until
+`frontier-dispatch arm`.
 
-### Rollback / uninstall
+After skill-only development changes, `/reload-plugins` can refresh the plugin. Restart the session
+after hook or MCP changes.
 
-Use Claude Code's plugin UI or uninstall flow for `fablefuse@fablefuse`, then restart. If you used
-Option B (manual hooks), run `python3 fable_dispatch.py uninstall-hooks` to remove the merged
-settings hooks.
+For a pre-0.3 installation, remove the prior plugin entry in Claude Code's plugin manager, install
+the new `frontierfuse@frontierfuse` ID, and restart. Existing local run/state artifacts should not be
+copied into the new configuration directory.
 
-### Local checkout (development)
+### Codex And Grok Build
+
+Install one stable checkout and register the advisor MCP only in harnesses you use:
 
 ```bash
-git clone https://github.com/Renn-Labs/FableFuse.git && cd FableFuse
+export FRONTIERFUSE_HOME="$HOME/.local/share/FrontierFuse"
+git clone https://github.com/Renn-Labs/FrontierFuse.git "$FRONTIERFUSE_HOME"
+export PATH="$FRONTIERFUSE_HOME/bin:$PATH"
+
+codex mcp add frontier-advisor -- python3 "$FRONTIERFUSE_HOME/frontier_advisor_mcp.py"
+grok mcp add frontier-advisor -- python3 "$FRONTIERFUSE_HOME/frontier_advisor_mcp.py"
+
+frontier-dispatch doctor
+```
+
+Start a new Codex or Grok session after MCP registration. The host can then call `ask_frontier`;
+`frontier-dispatch` remains available for model selection and managed bodies. There is no published
+Codex or Grok marketplace plugin in 0.3.0.
+
+### Development Checkout
+
+```bash
+git clone https://github.com/Renn-Labs/FrontierFuse.git
+cd FrontierFuse
 git config core.hooksPath githooks
-claude plugin validate .        # manifest schema check
-claude --plugin-dir .           # load for this session only (no marketplace)
-# after editing hooks/skills: /reload-plugins may pick up skill changes;
-# full hook updates still need a session restart
+claude plugin validate .
+python3 tests/run_contracts.py
+claude --plugin-dir .
 ```
 
-### Option B — manual hooks (no marketplace)
+### Manual Claude Hooks
 
 ```bash
-python3 fable_dispatch.py install-hooks     # reversible; backs up settings.json
-# add bin/ to PATH for the `fable-dispatch` / `ask-fable` shims, or call the .py files directly
+python3 frontier_dispatch.py install-hooks
 ```
 
-This merges the two hooks into Claude Code settings and writes a `.json.bak`. It does **not**
-register skills — `/fablefuse` / `/fablefuse-config` need the plugin install (or a manual skills
-symlink). `fable-dispatch doctor` reports which install path is active.
+This reversibly merges hooks into `~/.claude/settings.json` and creates a backup. It does not
+install slash commands; use the plugin for `/frontierfuse` and `/frontierfuse-config`.
 
-### Zero-key smoke (no model calls)
+## Configure
+
+Use `/frontierfuse-config` for the guided flow. It asks profile, frontier provider/model, executor
+provider/model, effort, fast mode, reminders, and scope as separate decisions.
+
+CLI equivalent:
 
 ```bash
-git clone <your-fork-url> FableFuse && cd FableFuse
-python3 fable_common.py            # effective config + built commands
-python3 tests/run_contracts.py     # aggregate offline suites (PASS)
-python3 fable_dispatch.py doctor   # readiness table
+frontier-dispatch config \
+  --profile advisor \
+  --frontier-provider claude --frontier-model claude-fable-5 \
+  --executor codex --model "" \
+  --effort high --fast off --update-mode passive
 ```
 
-Tracked pre-push: `scripts/pre-push-check.sh`. Before first public exposure:
-`scripts/public-release-scrub.py --all-history`.
-
----
-
-## Advisor mode (default)
-
-Run your executor/lead as usual; consult Fable for the hard calls.
+Examples:
 
 ```bash
-ask-fable "Is an outbox pattern overkill here, or the right call?"
-# optional: expose ask_fable to a compatible executor (Codex example — not a published plugin)
-codex mcp add fable-advisor -- python3 "$PWD/fable_advisor_mcp.py"
-fable-dispatch config --executor opus    # Opus lead + Fable advisor
+# Sonnet drives; Fable advises
+frontier-dispatch config --profile advisor \
+  --frontier-provider claude --frontier-model claude-fable-5 \
+  --executor claude --model claude-sonnet-5
+
+# Opus drives; Fable advises
+frontier-dispatch config --profile advisor \
+  --frontier-provider claude --frontier-model claude-fable-5 \
+  --executor claude --model claude-opus-4-8
+
+# Grok executes; GPT-5.6 Terra advises
+frontier-dispatch config --profile advisor \
+  --frontier-provider codex --frontier-model gpt-5.6-terra \
+  --executor grok --model grok-4.5
+
+# Gemini executes; GPT-5.6 Sol is the managed frontier model
+frontier-dispatch config --profile orchestrator \
+  --frontier-provider codex --frontier-model gpt-5.6-sol \
+  --executor gemini --model gemini-3.5-flash
 ```
 
-Grok 4.5 as lead + Fable advisor:
-
-```bash
-fable-dispatch config --executor grok
-grok mcp add fable-advisor -- python3 "$PWD/fable_advisor_mcp.py"
-grok --model grok-4.5 "Work normally; call ask-fable for hard architecture/review calls"
-ask-fable "What is the risky part of this plan?"
-```
-
-Start a new Grok session after registering the MCP server so the `ask_fable` tool is available.
-
----
-
-## Orchestrator mode (workflow guardrail)
-
-The host freezes verification **before** delegation. While armed, the model runs
-`fable-dispatch verify` with **no replacement gate**. Closing the loop requires a
-**snapshot-bound GREEN**.
-
-```bash
-# Host: freeze a single argv command (no shell pipelines or chaining)
-fable-dispatch arm --gate "pytest -q"                 # optional: --cwd "$PWD"
-fable-dispatch config --executor codex --effort high  # or sonnet|opus|grok
-
-# Controller/model: dispatch body work, then verify the frozen gate only
-fable-dispatch "Implement X per spec: files, constraints, non-goals, exact tests"
-fable-dispatch verify                                 # uses the arm-time gate; cannot swap it
-# RED → dispatch fixes with concrete failure notes → verify again
-fable-dispatch done                                   # only on snapshot-bound GREEN
-```
-
-**Gate rules (0.2.6):**
-
-- Command is executed as **argv** with `shell=False` (via `shlex.split`).
-- Shell pipelines, chaining (`&&` / `;`), and redirection are **not** accepted for the hardened
-  close path. Prefer one executable + args: `"pytest -q"`, `"python3 -m unittest"`.
-- A closable arm requires the selected `--cwd` (or current directory) to be inside a Git worktree.
-  The snapshot covers Git HEAD/index/diffs plus bounded **non-ignored** untracked files; ignored
-  build/cache paths are deliberately outside the identity.
-- Explicit legacy shell compatibility (`--legacy-shell` / `FABLE_VERIFY_LEGACY_SHELL`) is **unsafe**
-  and **cannot** close the hardened Stop hook.
-- Kill-switch: `FABLE_GUARDS_OFF=1` / `CLAUDE_GUARDS_OFF=1`. Deliberate host override: `disarm`.
-
-This is a **workflow guardrail**, not a hard OS sandbox: it steers the in-session controller away
-from direct mutation while armed; bodies still run under their own CLI permission models.
-
----
-
-## Configure (session or permanent)
-
-**Mid-session:** `/fablefuse-config` (explicit invoke only). **CLI:** per-call flag > session >
-global config > env > default. Persist with `fable-dispatch config …` or `--global`. Changes apply
-to the *next* dispatch. `--effort` is shared for Codex and Grok unless you override
-engine-specific env/config.
-
-| toggle | env | default | purpose |
+| Flag | Environment | Default | Purpose |
 |-|-|-|-|
-| `--executor` | `FABLE_EXECUTOR` | `codex` | body/lead: `codex` \| `sonnet` \| `opus` \| `grok` |
-| `--model` | `FABLE_CODEX_MODEL` | *(unset)* | pin Codex model; unset = Codex CLI account-aware default |
-| `--effort` | `FABLE_CODEX_EFFORT`, `FABLE_GROK_EFFORT` | `high` | Codex/Grok reasoning effort |
-| `--fast on\|off` | `FABLE_CODEX_FAST` | `off` | maps effort → `FABLE_CODEX_FAST_EFFORT` (`low`) |
-| `--sonnet-model` | `FABLE_SONNET_MODEL` | `claude-sonnet-5` | when `executor=sonnet` |
-| `--opus-model` | `FABLE_OPUS_MODEL` | `claude-opus-4-8` | when `executor=opus` |
-| `--grok-model` | `FABLE_GROK_MODEL` | `grok-4.5` | when `executor=grok` |
-| — | `FABLE_MODEL` | `claude-fable-5` | Fable advisor/brain |
-| — | `FABLE_CODEX_YOLO` | *unset / off* | **opt-in** Codex `--yolo` autonomy |
-| — | `FABLE_GROK_YOLO` | *unset / off* | **opt-in** Grok `bypassPermissions` |
-| — | `FABLE_GROK_PERMISSION_MODE` | *unset* | explicit Grok permission mode when set |
+| `--profile` | `FRONTIER_PROFILE` | `advisor` | `advisor` or `orchestrator` role contract |
+| `--frontier-provider` | `FRONTIER_PROVIDER` | `claude` | managed frontier provider |
+| `--frontier-model` | `FRONTIER_MODEL` | `claude-fable-5` | managed frontier model |
+| `--executor` | `FRONTIER_EXECUTOR` | `codex` | body provider: Codex, Claude, Grok, or Gemini |
+| `--model` | provider-specific model setting | account default for Codex | selected executor model |
+| `--claude-model` | `FRONTIER_CLAUDE_MODEL` | `claude-sonnet-5` | explicit Claude executor model |
+| `--grok-model` | `FRONTIER_GROK_MODEL` | `grok-4.5` | explicit Grok executor model |
+| `--gemini-model` | `FRONTIER_GEMINI_MODEL` | `gemini-3.5-flash` | explicit Gemini executor model |
+| `--effort` | `FRONTIER_CODEX_EFFORT`, `FRONTIER_GROK_EFFORT` | `high` | Codex/Grok reasoning effort |
+| `--fast` | `FRONTIER_CODEX_FAST` | `off` | use fast effort/model settings |
+| `--update-mode` | `FRONTIER_UPDATE_MODE` | `passive` | `passive`, `manual`, or `off` |
 
-Whole-command overrides: `FABLE_BODY_CMD` / `FABLE_EXECUTOR_CMD`, `FABLE_CODEX_CMD`,
-`FABLE_SONNET_CMD`, `FABLE_OPUS_CMD`, `FABLE_GROK_CMD`, `FABLE_ADVISOR_CMD`.
+Whole-command compatibility overrides: `FRONTIER_BODY_CMD`, `FRONTIER_EXECUTOR_CMD`,
+`FRONTIER_ADVISOR_CMD`, `FRONTIER_CODEX_CMD`, `FRONTIER_CLAUDE_CMD`, `FRONTIER_GROK_CMD`, and
+`FRONTIER_GEMINI_CMD`.
 
-### Model / executor examples
+Precedence: per-call flag > session config > `~/.config/frontier-fuse/config.json` > environment >
+built-in defaults. `--global` persists a selection. Changes apply to the next managed call.
+
+## Advisor Usage
+
+Run your selected executor normally and consult the frontier model only for hard decisions:
 
 ```bash
-# Codex: account-aware default model, high effort (default effort)
-fable-dispatch config --executor codex --effort high
-
-# Optional exact OpenAI preview pin (only if your org has access — see below)
-fable-dispatch config --executor codex --model gpt-5.6-terra --effort high
-
-# Sonnet 5 / Opus 4.8 / Grok 4.5 as body
-fable-dispatch config --executor sonnet
-fable-dispatch config --executor opus
-fable-dispatch config --executor grok --grok-model grok-4.5 --effort high
-
-# Explicit autonomy opt-in (only on trusted repos)
-export FABLE_CODEX_YOLO=1
-export FABLE_GROK_YOLO=1
+ask-frontier "Is an outbox pattern justified here? Include the main tradeoffs and verification risk."
 ```
 
-### Codex and Grok harness boundary (0.2.6)
+The MCP tool is `ask_frontier`. Advice is not proof; the executor remains responsible for tools,
+edits, tests, and final verification.
 
-| Engine | Default permissions | Autonomy opt-in |
-|-|-|-|
-| **Codex** | provider / Codex CLI defaults (no `--yolo`) | `FABLE_CODEX_YOLO=1` → `--yolo` |
-| **Grok** | provider / Grok defaults (no `--permission-mode`) | `FABLE_GROK_YOLO=1` → `bypassPermissions`; or set `FABLE_GROK_PERMISSION_MODE` |
+## Orchestrator Usage
 
-Prompt transport: Codex uses **stdin**; Grok uses a managed owner-only **prompt file** deleted after
-the run. Provider processes run in their own process group and are terminated as a group on
-timeout/interrupt.
+Freeze verification before delegation:
 
-**Privacy:** cross-provider prompts leave the local machine for the selected providers. Local
-config, state, and run artifacts are written **owner-only**.
+```bash
+frontier-dispatch arm --gate "pytest -q" --cwd "$PWD"
+frontier-dispatch config --profile orchestrator --executor grok --model grok-4.5
+frontier-dispatch "Implement X in files A/B; do not touch C; proof: pytest -q"
+frontier-dispatch verify
+# RED: dispatch a focused fix, then verify again
+frontier-dispatch done
+```
 
----
+The verifier runs one argv-style command with `shell=False`. Shell pipelines, chaining,
+redirection, and substitutions cannot close the hardened loop. GREEN requires exit code 0, a stable
+Git snapshot during the gate, and a receipt matching the frozen argv/cwd and current workspace.
 
-## Staying current on model names
+The hooks are a workflow guardrail, not an OS sandbox. Kill switches are
+`FRONTIER_GUARDS_OFF=1` and `CLAUDE_GUARDS_OFF=1`; explicit host override is
+`frontier-dispatch disarm`.
 
-### Codex (not pinned by default)
+## Permissions And Privacy
 
-FableFuse **does not pin** a Codex model unless you set `--model` / `FABLE_CODEX_MODEL`. The Codex
-CLI then uses its **account-aware default**. Effort defaults to **high**.
+Provider permission defaults are inherited. Elevated autonomy is never enabled automatically:
 
-Check current Codex models: [Codex models](https://developers.openai.com/codex/models) and the
-[Codex changelog](https://developers.openai.com/codex/changelog). `fable-dispatch doctor` prints the
-exact command that would run without making a live call.
+```bash
+export FRONTIER_CODEX_YOLO=1
+export FRONTIER_GROK_YOLO=1
+# or: export FRONTIER_GROK_PERMISSION_MODE=<mode>
+```
 
-### Optional OpenAI preview IDs (limited access)
+Codex and Claude prompts use stdin. Gemini appends stdin to an empty `--prompt` argument. Grok
+prompts use an owner-only temporary file that is deleted after use. Provider processes run in their
+own process group and are terminated as a group on timeout.
 
-As of **2026-07-09**, these exact IDs are **limited preview for approved organizations** through the
-API and Codex. They are **not** in ChatGPT. **Do not assume universal access** — only pin them if
-your org is approved:
+Cross-provider prompts leave the local machine and are subject to provider terms and retention.
+Config, state, cached update data, prompts, and raw run artifacts are owner-only. Never commit
+`runs/`, `verdict.json`, provider transcripts, `.omx/`, `.omc/`, credentials, or local state.
 
-| ID | Role (qualitative) |
-|-|-|
-| `gpt-5.6-sol` | flagship |
-| `gpt-5.6-terra` | balanced |
-| `gpt-5.6-luna` | fast / affordable |
+## Doctor And Updates
 
-Official sources:
+```bash
+frontier-dispatch doctor                  # offline readiness and cached release status
+frontier-dispatch doctor --check-updates  # readiness plus opt-in release check
+frontier-dispatch update --check          # cached explicit check
+frontier-dispatch update --check --force  # bypass cache and update-mode setting
+```
 
-- https://help.openai.com/en/articles/20001325-a-preview-of-gpt-5-6-sol-terra-and-luna
-- https://openai.com/index/previewing-gpt-5-6-sol/
+Doctor checks the selected executor CLI, selected frontier CLI, plugin/hooks state, writable state,
+and release cache. It does not call live inference or prove model entitlement.
 
-### Other verified defaults
+Passive reminders check the public plugin manifest at most every seven days during explicit
+FrontierFuse use. They never install automatically and send no machine ID, repository data, prompt,
+credential, or usage telemetry. The owner-only cache is
+`~/.config/frontier-fuse/update-check.json`.
 
-| Role | Exact ID | Notes |
-|-|-|-|
-| Sonnet body | `claude-sonnet-5` | Anthropic model docs |
-| Opus body | `claude-opus-4-8` | Anthropic model docs / Opus 4.8 notes |
-| Grok body | `grok-4.5` | Grok Build local CLI default/available; FableFuse can select it as executor/lead |
-| Fable brain | `claude-fable-5` | advisor/orchestrator controller |
+```bash
+frontier-dispatch config --update-mode passive --global
+frontier-dispatch config --update-mode manual --global
+frontier-dispatch config --update-mode off --global
+```
 
-Verify Claude IDs against [Anthropic models](https://docs.anthropic.com/en/docs/about-claude/models)
-before changing defaults. Verify Grok IDs against official xAI / Grok Build docs.
+### Update Claude Code
 
----
+```text
+/plugin marketplace update frontierfuse
+/plugin update frontierfuse@frontierfuse
+```
 
-## How it works (design in one screen)
+Restart Claude Code after updating.
 
-- **Body invocation** — selected executor via `build_body_command`. Codex:
-  `codex exec [--yolo] -c model_reasoning_effort=<e> -` (stdin). Sonnet/Opus: `claude -p --model …`.
-  Grok: `grok --model grok-4.5 --reasoning-effort <e> [--permission-mode …] --prompt-file …`.
-- **Host-frozen, snapshot-bound verdict** — arm freezes argv + cwd; verify runs that gate with
-  `shell=False`; GREEN requires exit 0, a supported complete Git snapshot, and a stable post-gate
-  workspace snapshot. `done`/Stop bind the receipt back to the arm-time argv + cwd. Prose from the
-  brain never closes the loop.
-- **Workflow guardrail** — while armed, PreToolUse blocks the controller's direct mutation and
-  non-allowlisted Bash; Stop blocks finish without a fresh snapshot-bound GREEN. Tunable allowlist,
-  trivial-edit escape, kill-switch.
-- **Context hygiene** — raw body output is stored as local artifacts; only a bounded handoff card
-  returns to the controller.
+### Update Checkout Installs
 
----
+```bash
+cd "$FRONTIERFUSE_HOME"
+git pull --ff-only
+frontier-dispatch doctor
+```
 
-## Honest limits
+Start a new harness session after updating MCP code.
 
-FableFuse coordinates a body engine and preserves deterministic verification artifacts. It does
-**not** guarantee model output is correct, safe, or complete — bodies can fabricate, miss bugs, and
-consume provider quota. You are responsible for review. Live runs need the selected body CLI and a
-Fable-capable `claude` for advisor/brain calls. Offline tests, dry-runs, and doctor work without
-live provider calls.
+### Roll Back Or Uninstall
 
-The workflow guardrail is **not** a hard sandbox. Bodies run with their own permission models.
-Only point executors at repositories you trust.
+Claude Code: `/plugin uninstall frontierfuse@frontierfuse`, optionally
+`/plugin marketplace remove frontierfuse`, then restart. Manual hooks:
+`python3 frontier_dispatch.py uninstall-hooks`.
 
----
+Checkout installs:
+
+```bash
+codex mcp remove frontier-advisor
+grok mcp remove frontier-advisor
+rm -rf "$FRONTIERFUSE_HOME"
+```
+
+For rollback, check out a known release tag or commit before restarting the harness.
+
+## Release Safety
+
+Local development uses the tracked pre-push hook:
+
+```bash
+git config core.hooksPath githooks
+scripts/pre-push-check.sh
+python3 scripts/public-release-scrub.py --all-history
+```
+
+The release gate checks synchronized metadata, public scrub rules, model-name policy, whitespace,
+byte compilation, all offline contracts, plugin validation, provider dry-runs, and doctor output.
+
+## Limits
+
+FrontierFuse does not guarantee model correctness, safety, availability, or cost. Models can miss
+bugs, fabricate, and consume quota. Review diffs and run independent deterministic checks. The
+workflow guardrail is not isolation; bodies run under their own CLI permissions.
 
 ## Credits
 
-- Advisor pattern and Codex-first invocation doctrine build on
-  [steipete/agent-scripts `codex-first`](https://github.com/steipete/agent-scripts/blob/main/skills/codex-first/SKILL.md).
-- `fable_scrub.py` and artifact/handoff helpers in `fable_common.py` are adapted from
-  [FleetFuse](https://github.com/Renn-Labs/FleetFuse) (MIT). See `NOTICE`.
+The advisor pattern and Codex-first invocation doctrine build on
+[steipete/agent-scripts](https://github.com/steipete/agent-scripts). Scrub and handoff helpers are
+adapted from [FleetFuse](https://github.com/Renn-Labs/FleetFuse) under MIT; see `NOTICE`.
 
 ## License
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline contract tests for FableFuse (no live Codex/Claude)."""
+"""Offline contract tests for FrontierFuse (no live Codex/Claude)."""
 from __future__ import annotations
 
 import importlib.util
@@ -11,19 +11,19 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_TMP = tempfile.mkdtemp(prefix="fable-contract-")
-os.environ.setdefault("FABLE_CONFIG_DIR", str(Path(_TMP) / "config"))
-os.environ.setdefault("FABLE_STATE_DIR", str(Path(_TMP) / "state"))
-os.environ.setdefault("FABLE_RUNS_DIR", str(Path(_TMP) / "runs"))
-os.environ["FABLE_CODEX_CMD"] = "echo"
-os.environ["FABLE_ADVISOR_CMD"] = "echo"
+_TMP = tempfile.mkdtemp(prefix="frontier-contract-")
+os.environ.setdefault("FRONTIER_CONFIG_DIR", str(Path(_TMP) / "config"))
+os.environ.setdefault("FRONTIER_STATE_DIR", str(Path(_TMP) / "state"))
+os.environ.setdefault("FRONTIER_RUNS_DIR", str(Path(_TMP) / "runs"))
+os.environ["FRONTIER_CODEX_CMD"] = "echo"
+os.environ["FRONTIER_ADVISOR_CMD"] = "echo"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import fable_common as fc  # noqa: E402
-import fable_advisor  # noqa: E402
-import fable_verify  # noqa: E402
+import frontier_common as fc  # noqa: E402
+import frontier_advisor  # noqa: E402
+import frontier_verify  # noqa: E402
 
 SLACK = 120  # truncation marker headroom beyond MAX_RETURN_CHARS
 
@@ -47,7 +47,7 @@ def _restore(name: str, old: str | None) -> None:
 def _load_hook(rel_path: str):
     path = ROOT / rel_path
     assert path.is_file(), f"hook missing: {path}"
-    spec = importlib.util.spec_from_file_location(f"fable_hook_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"frontier_hook_{path.stem}", path)
     assert spec is not None and spec.loader is not None, f"cannot load hook: {path}"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -73,7 +73,7 @@ def _pretool_payload(session_id: str, tool_name: str = "Write", tool_input: dict
     return {
         "session_id": session_id,
         "tool_name": tool_name,
-        "tool_input": tool_input or {"file_path": "/tmp/fable-contract.txt", "content": "x"},
+        "tool_input": tool_input or {"file_path": "/tmp/frontier-contract.txt", "content": "x"},
     }
 
 
@@ -86,7 +86,7 @@ def _run_dispatch(args: list[str], extra_env: dict | None = None) -> subprocess.
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        [sys.executable, str(ROOT / "fable_dispatch.py"), *args],
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), *args],
         capture_output=True, text=True, timeout=30, env=env, cwd=str(ROOT),
     )
 
@@ -112,8 +112,8 @@ def _pretool_allowed(proc: subprocess.CompletedProcess[str]) -> bool:
 def test_resolve_config_precedence() -> None:
     sid = "contract-precedence"
     fc.clear_state(sid)
-    old_model = _env("FABLE_CODEX_MODEL", "env-model")
-    old_effort = _env("FABLE_CODEX_EFFORT", "low")
+    old_model = _env("FRONTIER_CODEX_MODEL", "env-model")
+    old_effort = _env("FRONTIER_CODEX_EFFORT", "low")
     try:
         fc.save_global_config({"codex_model": "file-model", "codex_effort": "medium"})
         fc.write_state(sid, config={"codex_model": "session-model", "codex_effort": "high"})
@@ -140,8 +140,8 @@ def test_resolve_config_precedence() -> None:
         assert cfg["codex_model"] == "env-model"
         assert cfg["codex_effort"] == "low"
     finally:
-        _restore("FABLE_CODEX_MODEL", old_model)
-        _restore("FABLE_CODEX_EFFORT", old_effort)
+        _restore("FRONTIER_CODEX_MODEL", old_model)
+        _restore("FRONTIER_CODEX_EFFORT", old_effort)
         fc.clear_state(sid)
         try:
             fc.GLOBAL_CONFIG.unlink()
@@ -151,8 +151,8 @@ def test_resolve_config_precedence() -> None:
 
 def test_build_codex_command_fast_swaps_effort() -> None:
     assert fc.build_codex_command(fc.resolve_config()) == ["echo"]
-    old_cmd = _env("FABLE_CODEX_CMD", None)
-    old_yolo = _env("FABLE_CODEX_YOLO", None)
+    old_cmd = _env("FRONTIER_CODEX_CMD", None)
+    old_yolo = _env("FRONTIER_CODEX_YOLO", None)
     try:
         cfg = {
             "codex_model": "codex-test-model",
@@ -160,7 +160,7 @@ def test_build_codex_command_fast_swaps_effort() -> None:
             "fast": True,
             "fast_effort": "low",
             "fast_model": "fast-test-model",
-            "fable_model": "advisor-test-model",
+            "frontier_model": "advisor-test-model",
         }
         cmd = fc.build_codex_command(cfg)
         assert cmd == [
@@ -175,33 +175,41 @@ def test_build_codex_command_fast_swaps_effort() -> None:
             "-c", "model_reasoning_effort=high", "-",
         ], cmd
 
-        os.environ["FABLE_CODEX_YOLO"] = "1"
+        os.environ["FRONTIER_CODEX_YOLO"] = "1"
         assert "--yolo" in fc.build_codex_command(cfg)
     finally:
-        _restore("FABLE_CODEX_YOLO", old_yolo)
-        _restore("FABLE_CODEX_CMD", old_cmd)
-        os.environ["FABLE_CODEX_CMD"] = "echo"
+        _restore("FRONTIER_CODEX_YOLO", old_yolo)
+        _restore("FRONTIER_CODEX_CMD", old_cmd)
+        os.environ["FRONTIER_CODEX_CMD"] = "echo"
 
 
 def test_build_body_command_executor() -> None:
-    old_cmd = _env("FABLE_CODEX_CMD", None)      # unset echo so codex builds a real command
-    old_body = _env("FABLE_BODY_CMD", None)
-    old_exec = _env("FABLE_EXECUTOR", None)
-    old_opus = _env("FABLE_OPUS_CMD", None)
-    old_grok = _env("FABLE_GROK_CMD", None)
-    old_grok_yolo = _env("FABLE_GROK_YOLO", None)
-    old_grok_permission = _env("FABLE_GROK_PERMISSION_MODE", None)
-    old_grok_effort = _env("FABLE_GROK_EFFORT", None)
+    old_cmd = _env("FRONTIER_CODEX_CMD", None)      # unset echo so codex builds a real command
+    old_body = _env("FRONTIER_BODY_CMD", None)
+    old_exec = _env("FRONTIER_EXECUTOR", None)
+    old_claude = _env("FRONTIER_CLAUDE_CMD", None)
+    old_grok = _env("FRONTIER_GROK_CMD", None)
+    old_gemini = _env("FRONTIER_GEMINI_CMD", None)
+    old_grok_yolo = _env("FRONTIER_GROK_YOLO", None)
+    old_grok_permission = _env("FRONTIER_GROK_PERMISSION_MODE", None)
+    old_grok_effort = _env("FRONTIER_GROK_EFFORT", None)
     try:
         codex_cfg = fc.resolve_config(overrides={"executor": "codex"})
         assert fc.build_body_command(codex_cfg)[0] == "codex"
 
-        sonnet_cfg = fc.resolve_config(overrides={"executor": "sonnet", "sonnet_model": "sonnet-test-model"})
-        assert fc.build_body_command(sonnet_cfg) == ["claude", "-p", "--model", "sonnet-test-model"]
-
-        opus_cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-4-8"})
-        assert fc.build_body_command(opus_cfg) == ["claude", "-p", "--model", "claude-opus-4-8"]
-        assert fc.build_fable_command(opus_cfg) == ["echo"]
+        claude_cfg = fc.resolve_config(
+            overrides={"executor": "claude", "claude_model": "claude-opus-4-8"}
+        )
+        assert fc.build_body_command(claude_cfg) == [
+            "claude", "-p", "--model", "claude-opus-4-8"
+        ]
+        claude_final, claude_stdin, claude_cleanup = fc._prepare_prompt_command(
+            fc.build_body_command(claude_cfg), "hello from claude"
+        )
+        assert claude_final == ["claude", "-p", "--model", "claude-opus-4-8"]
+        assert claude_stdin == "hello from claude"
+        assert claude_cleanup == []
+        assert fc.build_frontier_command(claude_cfg) == ["echo"]
 
         grok_cfg = fc.resolve_config(overrides={"executor": "grok", "grok_model": "grok-4.5"})
         assert fc.build_body_command(grok_cfg) == [
@@ -229,55 +237,76 @@ def test_build_body_command_executor() -> None:
             fc.build_body_command(fast_grok_cfg).index("--reasoning-effort") + 1
         ] == "low"
 
-        os.environ["FABLE_GROK_EFFORT"] = "medium"
+        os.environ["FRONTIER_GROK_EFFORT"] = "medium"
         env_grok_cfg = fc.resolve_config(overrides={"executor": "grok", "grok_model": "grok-4.5"})
         assert fc.build_body_command(env_grok_cfg)[
             fc.build_body_command(env_grok_cfg).index("--reasoning-effort") + 1
         ] == "medium"
-        os.environ.pop("FABLE_GROK_EFFORT", None)
+        os.environ.pop("FRONTIER_GROK_EFFORT", None)
 
-        os.environ["FABLE_GROK_YOLO"] = "1"
+        os.environ["FRONTIER_GROK_YOLO"] = "1"
         assert fc.build_body_command(grok_cfg)[
             fc.build_body_command(grok_cfg).index("--permission-mode") + 1
         ] == "bypassPermissions"
-        os.environ["FABLE_GROK_PERMISSION_MODE"] = "auto"
+        os.environ["FRONTIER_GROK_PERMISSION_MODE"] = "auto"
         auto_cmd = fc.build_body_command(grok_cfg)
         assert auto_cmd[auto_cmd.index("--permission-mode") + 1] == "auto"
-        os.environ.pop("FABLE_GROK_YOLO", None)
-        os.environ.pop("FABLE_GROK_PERMISSION_MODE", None)
+        os.environ.pop("FRONTIER_GROK_YOLO", None)
+        os.environ.pop("FRONTIER_GROK_PERMISSION_MODE", None)
 
-        os.environ["FABLE_OPUS_CMD"] = "opus-runner --flag"
-        assert fc.build_body_command(opus_cfg) == ["opus-runner", "--flag"]
-        os.environ.pop("FABLE_OPUS_CMD", None)
+        gemini_cfg = fc.resolve_config(
+            overrides={"executor": "gemini", "gemini_model": "gemini-3.5-flash"}
+        )
+        assert fc.build_body_command(gemini_cfg) == [
+            "gemini", "--model", "gemini-3.5-flash", "--prompt", "",
+            "--output-format", "text",
+        ]
+        gemini_final, gemini_stdin, gemini_cleanup = fc._prepare_prompt_command(
+            fc.build_body_command(gemini_cfg), "hello from gemini"
+        )
+        assert gemini_final == [
+            "gemini", "--model", "gemini-3.5-flash", "--prompt", "",
+            "--output-format", "text",
+        ]
+        assert gemini_stdin == "hello from gemini"
+        assert gemini_cleanup == []
 
-        os.environ["FABLE_GROK_CMD"] = "grok-runner --flag"
+        os.environ["FRONTIER_CLAUDE_CMD"] = "claude-runner --flag"
+        assert fc.build_body_command(claude_cfg) == ["claude-runner", "--flag"]
+        os.environ.pop("FRONTIER_CLAUDE_CMD", None)
+
+        os.environ["FRONTIER_GROK_CMD"] = "grok-runner --flag"
         assert fc.build_body_command(grok_cfg) == ["grok-runner", "--flag"]
-        os.environ.pop("FABLE_GROK_CMD", None)
+        os.environ.pop("FRONTIER_GROK_CMD", None)
 
-        os.environ["FABLE_BODY_CMD"] = "my-runner --flag"      # universal override wins
+        os.environ["FRONTIER_BODY_CMD"] = "my-runner --flag"      # universal override wins
         assert fc.build_body_command(codex_cfg) == ["my-runner", "--flag"]
-        assert fc.build_body_command(opus_cfg) == ["my-runner", "--flag"]
+        assert fc.build_body_command(claude_cfg) == ["my-runner", "--flag"]
         assert fc.build_body_command(grok_cfg) == ["my-runner", "--flag"]
+        assert fc.build_body_command(gemini_cfg) == ["my-runner", "--flag"]
     finally:
-        _restore("FABLE_CODEX_CMD", old_cmd)
-        _restore("FABLE_BODY_CMD", old_body)
-        _restore("FABLE_EXECUTOR", old_exec)
-        _restore("FABLE_OPUS_CMD", old_opus)
-        _restore("FABLE_GROK_CMD", old_grok)
-        _restore("FABLE_GROK_YOLO", old_grok_yolo)
-        _restore("FABLE_GROK_PERMISSION_MODE", old_grok_permission)
-        _restore("FABLE_GROK_EFFORT", old_grok_effort)
-        os.environ["FABLE_CODEX_CMD"] = "echo"
+        _restore("FRONTIER_CODEX_CMD", old_cmd)
+        _restore("FRONTIER_BODY_CMD", old_body)
+        _restore("FRONTIER_EXECUTOR", old_exec)
+        _restore("FRONTIER_CLAUDE_CMD", old_claude)
+        _restore("FRONTIER_GROK_CMD", old_grok)
+        _restore("FRONTIER_GEMINI_CMD", old_gemini)
+        _restore("FRONTIER_GROK_YOLO", old_grok_yolo)
+        _restore("FRONTIER_GROK_PERMISSION_MODE", old_grok_permission)
+        _restore("FRONTIER_GROK_EFFORT", old_grok_effort)
+        os.environ["FRONTIER_CODEX_CMD"] = "echo"
 
 
-def test_advisor_prompt_uses_selected_opus_lead() -> None:
-    cfg = fc.resolve_config(overrides={"executor": "opus", "opus_model": "claude-opus-4-8"})
-    prompt = fable_advisor._build_advisor_prompt(
+def test_advisor_prompt_uses_selected_claude_model() -> None:
+    cfg = fc.resolve_config(
+        overrides={"executor": "claude", "claude_model": "claude-opus-4-8"}
+    )
+    prompt = frontier_advisor._build_advisor_prompt(
         "How should the lead route this refactor?",
         "",
-        fable_advisor._lead_description(cfg),
+        frontier_advisor._lead_description(cfg),
     )
-    assert "Opus (claude-opus-4-8) is the EXECUTOR/LEAD" in prompt
+    assert "Claude (claude-opus-4-8) is the EXECUTOR" in prompt
     assert "Your role is ADVISOR ONLY" in prompt
 
 
@@ -354,31 +383,31 @@ def test_run_engine_cleans_prompt_file() -> None:
 
 
 def test_guards_off_honors_kill_switches() -> None:
-    old_fable = _env("FABLE_GUARDS_OFF", None)
+    old_fable = _env("FRONTIER_GUARDS_OFF", None)
     old_claude = _env("CLAUDE_GUARDS_OFF", None)
     try:
-        os.environ.pop("FABLE_GUARDS_OFF", None)
+        os.environ.pop("FRONTIER_GUARDS_OFF", None)
         os.environ.pop("CLAUDE_GUARDS_OFF", None)
         assert fc.guards_off() is False
 
-        os.environ["FABLE_GUARDS_OFF"] = "1"
+        os.environ["FRONTIER_GUARDS_OFF"] = "1"
         assert fc.guards_off() is True
-        os.environ.pop("FABLE_GUARDS_OFF", None)
+        os.environ.pop("FRONTIER_GUARDS_OFF", None)
 
         os.environ["CLAUDE_GUARDS_OFF"] = "yes"
         assert fc.guards_off() is True
     finally:
-        _restore("FABLE_GUARDS_OFF", old_fable)
+        _restore("FRONTIER_GUARDS_OFF", old_fable)
         _restore("CLAUDE_GUARDS_OFF", old_claude)
 
 
 def test_pretool_gate_contracts() -> None:
-    gate = ROOT / "hooks" / "fable_gate.py"
-    _load_hook("hooks/fable_gate.py")
+    gate = ROOT / "hooks" / "frontier_gate.py"
+    _load_hook("hooks/frontier_gate.py")
 
     sid = "contract-pretool"
     fc.clear_state(sid)
-    old_guards = _env("FABLE_GUARDS_OFF", None)
+    old_guards = _env("FRONTIER_GUARDS_OFF", None)
     try:
         fc.write_state(sid, armed=True)
         proc = _run_hook(gate, _pretool_payload(sid, "Write"))
@@ -389,18 +418,18 @@ def test_pretool_gate_contracts() -> None:
         assert _pretool_allowed(proc), f"unarmed Write should allow; stdout={proc.stdout!r} stderr={proc.stderr!r}"
 
         fc.write_state(sid, armed=True)
-        proc = _run_hook(gate, _pretool_payload(sid, "Write"), extra_env={"FABLE_GUARDS_OFF": "1"})
+        proc = _run_hook(gate, _pretool_payload(sid, "Write"), extra_env={"FRONTIER_GUARDS_OFF": "1"})
         assert _pretool_allowed(proc), f"kill-switch should allow; stdout={proc.stdout!r} stderr={proc.stderr!r}"
     finally:
-        _restore("FABLE_GUARDS_OFF", old_guards)
+        _restore("FRONTIER_GUARDS_OFF", old_guards)
         fc.clear_state(sid)
 
 
 def test_pretool_gate_blocks_bash_chaining() -> None:
     """Regression: an allowlisted prefix must not let a chained command through
     (e.g. "git status -sb && rm -rf ..."). A prefix match alone is not enough."""
-    gate = ROOT / "hooks" / "fable_gate.py"
-    _load_hook("hooks/fable_gate.py")
+    gate = ROOT / "hooks" / "frontier_gate.py"
+    _load_hook("hooks/frontier_gate.py")
 
     sid = "contract-bash-chain"
     fc.clear_state(sid)
@@ -430,8 +459,8 @@ def test_pretool_gate_blocks_bash_chaining() -> None:
 def test_pretool_gate_allows_only_frozen_verification() -> None:
     """The armed controller can inspect, dispatch, and run the host-frozen gate, but cannot
     reconfigure the workflow, replace the verifier, or smuggle behavior through environment vars."""
-    gate = ROOT / "hooks" / "fable_gate.py"
-    _load_hook("hooks/fable_gate.py")
+    gate = ROOT / "hooks" / "frontier_gate.py"
+    _load_hook("hooks/frontier_gate.py")
 
     sid = "contract-realistic-invocations"
     fc.clear_state(sid)
@@ -440,26 +469,26 @@ def test_pretool_gate_allows_only_frozen_verification() -> None:
         fc.write_state(sid, armed=True, approved_gate=approved)
 
         allowed_commands = [
-            "python3 fable_dispatch.py --help",
-            "python3 fable_dispatch.py doctor",
-            "fable-dispatch config",
-            "fable-dispatch verify",
-            "wc -l fable_dispatch.py hooks/fable_gate.py fable_common.py",
+            "python3 frontier_dispatch.py --help",
+            "python3 frontier_dispatch.py doctor",
+            "frontier-dispatch config",
+            "frontier-dispatch verify",
+            "wc -l frontier_dispatch.py hooks/frontier_gate.py frontier_common.py",
         ]
         for cmd in allowed_commands:
             proc = _run_hook(gate, _pretool_payload(sid, "Bash", {"command": cmd}))
             assert _pretool_allowed(proc), f"{cmd!r} must be allowed; stdout={proc.stdout!r}"
 
         still_denied = [
-            "python3 fable_dispatch.py arm --gate true",
-            "fable-dispatch disarm",
-            "fable-dispatch config --executor codex",
-            "fable-dispatch verify --gate true",
-            "python3 fable_verify.py --gate true",
-            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help",
-            "FABLE_GATE_ALLOW_TRIVIAL=1 wc -l fable_dispatch.py",
-            "python3 fable_dispatch.py --help && rm -rf /tmp/x",
-            "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help; rm -rf /tmp/x",
+            "python3 frontier_dispatch.py arm --gate true",
+            "frontier-dispatch disarm",
+            "frontier-dispatch config --executor codex",
+            "frontier-dispatch verify --gate true",
+            "python3 frontier_verify.py --gate true",
+            "FRONTIER_GUARDS_OFF=1 python3 frontier_dispatch.py --help",
+            "FRONTIER_GATE_ALLOW_TRIVIAL=1 wc -l frontier_dispatch.py",
+            "python3 frontier_dispatch.py --help && rm -rf /tmp/x",
+            "FRONTIER_GUARDS_OFF=1 python3 frontier_dispatch.py --help; rm -rf /tmp/x",
         ]
         for cmd in still_denied:
             proc = _run_hook(gate, _pretool_payload(sid, "Bash", {"command": cmd}))
@@ -469,49 +498,54 @@ def test_pretool_gate_allows_only_frozen_verification() -> None:
 
 
 def test_session_id_defaults_to_claude_code_session_id() -> None:
-    """Regression: without FABLE_SESSION_ID, fable-dispatch must key state by
+    """Regression: without FRONTIER_SESSION_ID, frontier-dispatch must key state by
     CLAUDE_CODE_SESSION_ID (what the real PreToolUse/Stop hooks receive) — not the
     literal string "default", or the hard gate never engages in a real session."""
     fake_session = "contract-claude-code-session-id-12345"
     fc.clear_state(fake_session)
     fc.clear_state("default")
-    old = _env("FABLE_SESSION_ID", None)
+    old = _env("FRONTIER_SESSION_ID", None)
     try:
         proc = _run_dispatch(["arm"], extra_env={"CLAUDE_CODE_SESSION_ID": fake_session})
         assert proc.returncode == 0, f"arm failed: {proc.stdout!r} {proc.stderr!r}"
         assert fc.read_state(fake_session)["armed"] is True, (
-            "state must be written under CLAUDE_CODE_SESSION_ID when FABLE_SESSION_ID is unset")
+            "state must be written under CLAUDE_CODE_SESSION_ID when FRONTIER_SESSION_ID is unset")
         assert fc.read_state("default")["armed"] is False, "must NOT fall through to 'default'"
     finally:
-        _restore("FABLE_SESSION_ID", old)
+        _restore("FRONTIER_SESSION_ID", old)
         fc.clear_state(fake_session)
         fc.clear_state("default")
 
 
-def test_dispatch_config_accepts_opus_executor() -> None:
-    """Reverse-advisor lead selection: Opus can be the lead/body executor while
-    the Fable advisor command remains independently configured."""
-    sid = "contract-opus-executor"
+def test_dispatch_separates_profile_frontier_and_executor_models() -> None:
+    """Profile, frontier model, and executor model are independent selections."""
+    sid = "contract-separated-models"
     fc.clear_state(sid)
     try:
         proc = _run_dispatch(
-            ["config", "--executor", "opus", "--opus-model", "claude-opus-4-8"],
-            extra_env={"FABLE_SESSION_ID": sid},
+            [
+                "config", "--profile", "advisor",
+                "--frontier-provider", "claude", "--frontier-model", "claude-fable-5",
+                "--executor", "claude", "--model", "claude-opus-4-8",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
         )
-        assert proc.returncode == 0, f"config opus failed: {proc.stdout!r} {proc.stderr!r}"
+        assert proc.returncode == 0, f"config failed: {proc.stdout!r} {proc.stderr!r}"
         cfg = json.loads(proc.stdout)
-        assert cfg["executor"] == "opus"
-        assert cfg["opus_model"] == "claude-opus-4-8"
-        assert cfg["fable_model"] == "claude-fable-5"
+        assert cfg["profile"] == "advisor"
+        assert cfg["frontier_provider"] == "claude"
+        assert cfg["frontier_model"] == "claude-fable-5"
+        assert cfg["executor"] == "claude"
+        assert cfg["claude_model"] == "claude-opus-4-8"
 
         proc = _run_dispatch(
-            ["--dry-run", "--executor", "opus", "--opus-model", "claude-opus-4-8", "lead with Opus; ask Fable"],
-            extra_env={"FABLE_SESSION_ID": sid},
+            ["--dry-run", "--executor", "claude", "--model", "claude-opus-4-8", "execute with Claude"],
+            extra_env={"FRONTIER_SESSION_ID": sid},
         )
-        assert proc.returncode == 0, f"opus dry-run failed: {proc.stdout!r} {proc.stderr!r}"
+        assert proc.returncode == 0, f"claude dry-run failed: {proc.stdout!r} {proc.stderr!r}"
         payload = json.loads(proc.stdout)
-        assert payload["mode"]["executor"] == "opus"
-        assert payload["mode"]["opus_model"] == "claude-opus-4-8"
+        assert payload["mode"]["executor"] == "claude"
+        assert payload["mode"]["claude_model"] == "claude-opus-4-8"
         assert "claude -p --model claude-opus-4-8" in payload["cards"][0]["summary"]
     finally:
         fc.clear_state(sid)
@@ -524,18 +558,18 @@ def test_dispatch_config_accepts_grok_executor() -> None:
     try:
         proc = _run_dispatch(
             ["config", "--executor", "grok", "--grok-model", "grok-4.5", "--effort", "medium"],
-            extra_env={"FABLE_SESSION_ID": sid},
+            extra_env={"FRONTIER_SESSION_ID": sid},
         )
         assert proc.returncode == 0, f"config grok failed: {proc.stdout!r} {proc.stderr!r}"
         cfg = json.loads(proc.stdout)
         assert cfg["executor"] == "grok"
         assert cfg["grok_model"] == "grok-4.5"
         assert cfg["grok_effort"] == "medium"
-        assert cfg["fable_model"] == "claude-fable-5"
+        assert cfg["frontier_model"] == "claude-fable-5"
 
         proc = _run_dispatch(
             ["--dry-run", "--executor", "grok", "--grok-model", "grok-4.5", "lead with Grok; ask Fable"],
-            extra_env={"FABLE_SESSION_ID": sid},
+            extra_env={"FRONTIER_SESSION_ID": sid},
         )
         assert proc.returncode == 0, f"grok dry-run failed: {proc.stdout!r} {proc.stderr!r}"
         payload = json.loads(proc.stdout)
@@ -547,60 +581,79 @@ def test_dispatch_config_accepts_grok_executor() -> None:
 
         proc = _run_dispatch(
             ["doctor"],
-            extra_env={"FABLE_SESSION_ID": sid, "FABLE_GROK_CMD": f"{sys.executable} -c pass"},
+            extra_env={"FRONTIER_SESSION_ID": sid, "FRONTIER_GROK_CMD": f"{sys.executable} -c pass"},
         )
         assert proc.returncode == 0, f"doctor grok override failed: {proc.stdout!r} {proc.stderr!r}"
-        assert "grok build CLI" in proc.stdout
+        assert "grok body CLI" in proc.stdout
         assert sys.executable in proc.stdout
     finally:
         fc.clear_state(sid)
 
 
+def test_manual_hook_install_is_atomic_owner_only_and_aligned() -> None:
+    with tempfile.TemporaryDirectory(prefix="frontier-hooks-") as td:
+        env = {"CLAUDE_CONFIG_DIR": td, "FRONTIER_SESSION_ID": "manual-hooks-contract"}
+        proc = _run_dispatch(["install-hooks"], extra_env=env)
+        assert proc.returncode == 0, proc.stderr
+        settings = Path(td) / "settings.json"
+        assert settings.is_file()
+        assert settings.stat().st_mode & 0o777 == 0o600
+        payload = json.loads(settings.read_text())
+        stop = payload["hooks"]["Stop"]
+        assert stop and stop[0]["matcher"] == "*"
+
+        proc = _run_dispatch(["uninstall-hooks"], extra_env=env)
+        assert proc.returncode == 0, proc.stderr
+        cleaned = json.loads(settings.read_text())
+        assert not cleaned.get("hooks", {}).get("PreToolUse")
+        assert not cleaned.get("hooks", {}).get("Stop")
+
+
 def test_cmd_done_refuses_without_fresh_green() -> None:
     """Regression: `done` must not disarm without a fresh GREEN verdict — otherwise the brain
-    can always run the (Bash-allowlisted) `fable-dispatch done` to kill the gate on demand."""
+    can always run the (Bash-allowlisted) `frontier-dispatch done` to kill the gate on demand."""
     sid = "contract-done-refuses"
     fc.clear_state(sid)
-    with tempfile.TemporaryDirectory(prefix="fable-done-") as td:
+    with tempfile.TemporaryDirectory(prefix="frontier-done-") as td:
         try:
             subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
             approved = {"gate": "true", "argv": ["true"], "cwd": str(Path(td).resolve())}
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
                            approved_gate=approved)
-            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            proc = _run_dispatch(["done"], extra_env={"FRONTIER_SESSION_ID": sid})
             assert proc.returncode != 0, f"done without a verdict must fail; stdout={proc.stdout!r}"
             assert fc.read_state(sid)["armed"] is True, "gate must stay armed without a fresh GREEN"
 
             stale = fc.make_verdict("pytest -q", 0, "sha", [], 90.0, 90.0)
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=stale,
                            approved_gate=approved)
-            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            proc = _run_dispatch(["done"], extra_env={"FRONTIER_SESSION_ID": sid})
             assert proc.returncode != 0, f"done with a stale GREEN must still fail; stdout={proc.stdout!r}"
             assert fc.read_state(sid)["armed"] is True
 
             legacy_fresh = fc.make_verdict("true", 0, "sha", [], 110.0, 100.0)
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=legacy_fresh,
                            approved_gate=approved)
-            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            proc = _run_dispatch(["done"], extra_env={"FRONTIER_SESSION_ID": sid})
             assert proc.returncode != 0, "legacy timestamp-only GREEN must not close the guardrail"
             assert fc.read_state(sid)["armed"] is True
 
-            # A body can run fable_verify directly outside the Claude hook surface. Its GREEN
+            # A body can run frontier_verify directly outside the Claude hook surface. Its GREEN
             # must still not close a loop whose host froze a different gate.
             forged_approved = {"gate": "false", "argv": ["false"], "cwd": str(Path(td).resolve())}
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
                            approved_gate=forged_approved)
-            forged = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            forged = frontier_verify.run_gate("true", session_id=sid, cwd=td)
             assert forged["result"] == "GREEN"
-            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            proc = _run_dispatch(["done"], extra_env={"FRONTIER_SESSION_ID": sid})
             assert proc.returncode != 0, "GREEN from a non-approved gate must not disarm"
             assert fc.read_state(sid)["armed"] is True
 
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
                            approved_gate=approved)
-            verdict = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            verdict = frontier_verify.run_gate("true", session_id=sid, cwd=td)
             assert verdict["result"] == "GREEN" and verdict["schema_version"] == 2
-            proc = _run_dispatch(["done"], extra_env={"FABLE_SESSION_ID": sid})
+            proc = _run_dispatch(["done"], extra_env={"FRONTIER_SESSION_ID": sid})
             assert proc.returncode == 0, (
                 f"done with snapshot-bound GREEN must succeed; stdout={proc.stdout!r} "
                 f"stderr={proc.stderr!r}")
@@ -613,13 +666,13 @@ def test_arm_freezes_verification_command() -> None:
     sid = "contract-frozen-gate"
     fc.clear_state(sid)
     with (
-        tempfile.TemporaryDirectory(prefix="fable-gate-") as td,
-        tempfile.TemporaryDirectory(prefix="fable-other-") as other,
+        tempfile.TemporaryDirectory(prefix="frontier-gate-") as td,
+        tempfile.TemporaryDirectory(prefix="frontier-other-") as other,
     ):
         try:
             subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
-            env = {"FABLE_SESSION_ID": sid}
-            non_git_env = {"FABLE_SESSION_ID": f"{sid}-non-git"}
+            env = {"FRONTIER_SESSION_ID": sid}
+            non_git_env = {"FRONTIER_SESSION_ID": f"{sid}-non-git"}
             proc = _run_dispatch(["arm", "--gate", "true", "--cwd", other], extra_env=non_git_env)
             assert proc.returncode == 2, "a closable arm must require a Git worktree"
             proc = _run_dispatch(["arm", "--gate", "true", "--cwd", td], extra_env=env)
@@ -655,13 +708,13 @@ def test_arm_freezes_verification_command() -> None:
 
 
 def test_stop_gate_contracts() -> None:
-    stop = ROOT / "hooks" / "fable_verify_gate.py"
-    _load_hook("hooks/fable_verify_gate.py")
+    stop = ROOT / "hooks" / "frontier_verify_gate.py"
+    _load_hook("hooks/frontier_verify_gate.py")
 
     sid = "contract-stop"
     fc.clear_state(sid)
-    old_guards = _env("FABLE_GUARDS_OFF", None)
-    with tempfile.TemporaryDirectory(prefix="fable-stop-") as td:
+    old_guards = _env("FRONTIER_GUARDS_OFF", None)
+    with tempfile.TemporaryDirectory(prefix="frontier-stop-") as td:
         try:
             subprocess.run(["git", "init", "-q"], cwd=td, check=True, timeout=30)
             approved = {"gate": "true", "argv": ["true"], "cwd": str(Path(td).resolve())}
@@ -682,14 +735,14 @@ def test_stop_gate_contracts() -> None:
             proc = _run_hook(stop, _stop_payload(sid))
             assert proc.returncode == 2, "legacy timestamp-only GREEN must not allow Stop"
 
-            verdict = fable_verify.run_gate("true", session_id=sid, cwd=td)
+            verdict = frontier_verify.run_gate("true", session_id=sid, cwd=td)
             assert verdict["result"] == "GREEN" and verdict["schema_version"] == 2
             proc = _run_hook(stop, _stop_payload(sid))
             assert proc.returncode == 0, (
                 f"snapshot-bound GREEN should allow Stop; rc={proc.returncode} "
                 f"stderr={proc.stderr!r}")
         finally:
-            _restore("FABLE_GUARDS_OFF", old_guards)
+            _restore("FRONTIER_GUARDS_OFF", old_guards)
             fc.clear_state(sid)
 
 
@@ -698,7 +751,7 @@ def main() -> int:
         test_resolve_config_precedence,
         test_build_codex_command_fast_swaps_effort,
         test_build_body_command_executor,
-        test_advisor_prompt_uses_selected_opus_lead,
+        test_advisor_prompt_uses_selected_claude_model,
         test_make_verdict_and_fresh_green,
         test_state_read_write_merge_clear,
         test_handoff_card_bounded_with_artifact,
@@ -708,8 +761,9 @@ def main() -> int:
         test_pretool_gate_blocks_bash_chaining,
         test_pretool_gate_allows_only_frozen_verification,
         test_session_id_defaults_to_claude_code_session_id,
-        test_dispatch_config_accepts_opus_executor,
+        test_dispatch_separates_profile_frontier_and_executor_models,
         test_dispatch_config_accepts_grok_executor,
+        test_manual_hook_install_is_atomic_owner_only_and_aligned,
         test_arm_freezes_verification_command,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,
@@ -723,9 +777,9 @@ def main() -> int:
             failed += 1
             print(f"FAIL {test.__name__}: {exc}", file=sys.stderr)
     if failed:
-        print(f"fable_contracts: FAIL ({failed})", file=sys.stderr)
+        print(f"frontier_contracts: FAIL ({failed})", file=sys.stderr)
         return 1
-    print("fable_contracts: PASS")
+    print("frontier_contracts: PASS")
     return 0
 
 

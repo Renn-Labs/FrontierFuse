@@ -1,9 +1,8 @@
 # FrontierFuse Execution Plan
 
-This is the durable implementation backlog for evolving FableFuse `0.2.5` into the
-provider-neutral FrontierFuse product. It converts the independent GPT-5.6 Sol review into
-sequenced, testable releases. A release is complete only when every acceptance gate is backed by
-fresh evidence.
+This is the durable implementation backlog after the provider-neutral FrontierFuse `0.3.0`
+release. It converts the independent frontier-model review into sequenced, testable releases. A
+release is complete only when every acceptance gate is backed by fresh evidence.
 
 ## Product Contract
 
@@ -32,13 +31,12 @@ verdict GREEN.
 
 The following remain supported throughout the `1.x` line:
 
-- Claude plugin ID `fablefuse`.
-- Existing `fable-dispatch`, `ask-fable`, `/fablefuse`, and `/fablefuse-config` entry points.
-- `~/.config/fable-fuse/` configuration and state paths.
-- Existing `FABLE_*` environment variables.
+- Claude plugin ID `frontierfuse`.
+- Existing `frontier-dispatch`, `ask-frontier`, `/frontierfuse`, and `/frontierfuse-config` entry points.
+- `~/.config/frontier-fuse/` configuration and state paths.
+- Existing `FRONTIER_*` environment variables.
 
-New FrontierFuse names are additive aliases until a future major release. Startup must never
-silently rewrite legacy configuration, migrate an armed session, or remove a working legacy path.
+Startup must never silently migrate an armed session or destructively rewrite configuration.
 
 ## Global Release Gates
 
@@ -64,9 +62,9 @@ Goal: make the current control loop materially safer and describe its boundary t
 ### Gate and command policy
 
 - [x] Replace the broad Bash prefix allowlist with parsed command policy.
-- [x] Deny direct `codex`, `grok`, and `claude` body execution while the controller gate is armed.
-- [x] Deny `fable-dispatch disarm` from the armed model tool path.
-- [x] Allow only the exact non-mutating `fable-dispatch` subcommands required by the loop.
+- [x] Deny direct `codex`, `grok`, `claude`, and `gemini` body execution while the controller gate is armed.
+- [x] Deny `frontier-dispatch disarm` from the armed model tool path.
+- [x] Allow only the exact non-mutating `frontier-dispatch` subcommands required by the loop.
 - [x] Restrict verifier entry points to the expected project script and safe options.
 - [x] Remove broad `find` allowance or validate that its actions are read-only.
 - [x] Preserve the explicit user kill switches and trivial-edit escape with accurate warnings.
@@ -112,7 +110,39 @@ Goal: make the current control loop materially safer and describe its boundary t
 
 Non-goals: FrontierFuse rebrand, new provider support, managed controller process, new plugin ID.
 
-## Release 0.2.7 - Reliable Configuration and Diagnostics
+## Release 0.3.0 - Installation, Doctor, and Quiet Updates
+
+Goal: make every currently supported harness installable, diagnosable, and update-aware without
+telemetry or background activity.
+
+### Tasks
+
+- [x] Document native Claude marketplace install, update, restart, rollback, and uninstall.
+- [x] Document stable-checkout Codex and Grok MCP registration, update, restart, rollback, and
+      uninstall.
+- [x] Keep `doctor` offline by default and add cached release status to its readiness report.
+- [x] Add an explicit `doctor --check-updates` network path.
+- [x] Add `update --check` with `passive`, `manual`, and `off` modes.
+- [x] Cache passive checks for seven days in an owner-only file.
+- [x] Run passive checks only during explicit FrontierFuse skill use and stay silent when current or
+      offline.
+- [x] Provide exact manual marketplace and checkout update commands; never update automatically.
+- [x] Keep update requests free of machine identifiers, repository data, prompts, and telemetry.
+- [x] Synchronize core update, MCP server, plugin, marketplace, changelog, README, and design
+      versions.
+
+### Acceptance evidence
+
+- [x] Offline contracts cover current/newer versions, fresh cache, owner-only permissions, opt-out,
+      network failure, passive silence, and doctor offline behavior.
+- [x] Manual and off modes make zero passive update-network requests.
+- [x] Ordinary doctor readiness remains independent of update availability.
+- [x] Every supported harness has one install and one update path in the README.
+
+Non-goals: daemon, startup ping, machine identifier, automatic update, custom marketplace service,
+Codex/Grok plugin packages.
+
+## Release 0.2.8 - Reliable Configuration and Diagnostics
 
 Goal: make configuration failures recoverable and readiness reports trustworthy.
 
@@ -140,40 +170,38 @@ Goal: make configuration failures recoverable and readiness reports trustworthy.
 
 Non-goals: live entitlement checks by default, new marketplaces, rebrand.
 
-## Release 0.3.0 - FrontierFuse Roles and Profiles
+## Release 0.3.0 - FrontierFuse Roles and Profiles (Delivered)
 
 Goal: expose provider-neutral product semantics without breaking existing installations.
 
 ### Tasks
 
-- [ ] Change public display branding to FrontierFuse.
-- [ ] Keep plugin ID and repository identity unchanged.
-- [ ] Introduce config schema v2 with `profile`, `roles.frontier`, and `roles.executor`.
-- [ ] Add explicit `host` and `managed` binding fields.
-- [ ] Add `frontierfuse` command and skill aliases.
-- [ ] Map legacy flat config and `FABLE_*` variables into the v2 effective configuration.
-- [ ] Add `FRONTIERFUSE_*` aliases with documented precedence and conflict warnings.
-- [ ] Add a source-backed bundled catalog for verified Fable, GPT-5.6, Claude, and Grok IDs.
-- [ ] Mark GPT-5.6 Sol as preview and never select it automatically.
-- [ ] Update mode diagrams, onboarding, doctor output, and error messages around ownership.
+- [x] Change public display branding, plugin ID, commands, and repository references to FrontierFuse.
+- [x] Add explicit `profile`, `frontier_provider`, `frontier_model`, executor, and provider model fields.
+- [x] Separate host-model limitations from managed provider calls in docs and skills.
+- [x] Add `frontierfuse` commands and skills.
+- [x] Use a single `FRONTIER_*` configuration namespace with documented precedence.
+- [x] Add a source-backed catalog for verified Fable, GPT-5.6, Claude, Grok, and Gemini IDs.
+- [x] Add local Grok model discovery and custom exact model IDs without inventing static releases.
+- [x] Update mode diagrams, onboarding, doctor output, and error messages around ownership.
 
 ### Acceptance evidence
 
-- [ ] At least 8 of 10 first-time users reach a dry-run within five minutes.
-- [ ] At least 8 of 10 correctly identify which model owns the loop in each profile.
-- [ ] Upgrade fixtures from 0.2.5 preserve commands, configuration, and armed-state safety.
+- [x] Offline contracts prove provider/model separation and dry-run command construction.
+- [x] The guided walkthrough asks profile, frontier model, executor provider, and executor model separately.
+- [x] Reinstall and restart guidance covers the pre-0.3 identity change.
 
-Non-goals: managed controller loop, repository rename, new plugin ID, automatic model routing.
+Non-goals: managed controller process and automatic model routing.
 
 ## Release 0.4.0 - Provider Adapter Contract
 
-Goal: make Claude, Codex, and Grok execution behavior predictable and capability-aware.
+Goal: make Claude, Codex, Grok, and Gemini execution behavior predictable and capability-aware.
 
 ### Tasks
 
 - [ ] Define one adapter interface for detection, argv construction, prompt transport, permission
       mapping, timeout, exit normalization, usage reporting, and capability declaration.
-- [ ] Implement Claude CLI, Codex CLI, and Grok Build adapters.
+- [ ] Extract the existing Claude, Codex, Grok Build, and Gemini command builders behind the adapter interface.
 - [ ] Execute argv without a shell by default.
 - [ ] Scope every run to an explicit workspace root.
 - [ ] Transport prompts through stdin or owner-only temporary files.
@@ -241,25 +269,25 @@ Goal: provide first-class installation for the two harnesses with stable packagi
 
 Non-goals: unsupported Codex hooks, Grok pseudo-marketplace, plugin-ID change.
 
-## Release 0.7.0 - Quiet Updates and Compatibility
+## Release 0.7.0 - Compatibility Metadata and Native Distribution
 
-Goal: notify users about compatible updates without telemetry or noisy checks.
+Goal: build on the quiet `0.3.0` reminder with protocol-aware compatibility and native harness
+distribution where official packaging surfaces support it.
 
 ### Tasks
 
 - [ ] Add core protocol handshake and supported-version ranges.
-- [ ] Add `update --check` with `manual`, `passive`, and `off` modes.
-- [ ] Keep manual mode as the default.
-- [ ] Cache passive checks for at least seven days and run only during explicit FrontierFuse use.
-- [ ] Stay silent when current.
-- [ ] Notify only for compatible stable releases with a clear manual command.
+- [ ] Extend `update --check` to distinguish compatible, migration-required, and rollback-required
+      releases.
+- [ ] Preserve the existing passive/manual/off privacy and cache contract.
+- [ ] Notify only for compatible stable releases unless the user selects a preview channel.
 - [ ] Publish checksummed release metadata with schema, protocol, channel, and migration notes.
 - [ ] Prefer native harness update metadata where it exists.
 - [ ] Add a Grok package only if current official Grok packaging supports the required contract.
 
 ### Acceptance evidence
 
-- [ ] Manual and off modes make zero update-network requests.
+- [ ] Manual and off modes continue to make zero passive update-network requests.
 - [ ] Passive checks do not measurably delay normal startup.
 - [ ] Every incompatible pairing reports the exact safe update or rollback action.
 - [ ] Old source URLs continue to install and update after any future repository rename.
@@ -345,11 +373,11 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 - Do not create a Grok marketplace story without a stable official packaging contract.
 - Remove dollar budgets if provider CLIs cannot expose reliable usage.
 - Keep update checks manual if passive checks add noticeable delay or privacy concern.
-- Keep GPT-5.6 Sol as a custom preview selection if entitlement cannot be diagnosed reliably.
+- Keep account-specific model selections custom if entitlement cannot be diagnosed reliably.
 - Prefer prompt non-retention and permission controls over redaction that damages reproducibility or
   creates false confidence.
 
 ## Current Execution Tranche
 
-The active build is `0.2.6`. Releases `0.2.7` through `1.0.0` remain pending until their dependencies
+The active build is `0.3.0`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
 and evidence gates are satisfied.

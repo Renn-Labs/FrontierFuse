@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FrontierFuse advisor consult shim -> frontier_advisor.py
+set -euo pipefail
+DIR="$(python3 -c 'import os, sys; print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))' "$0")"
+exec python3 "$DIR/frontier_advisor.py" "$@"

@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# FableFuse advisor consult shim -> fable_advisor.py
-set -euo pipefail
-DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
-exec python3 "$DIR/fable_advisor.py" "$@"

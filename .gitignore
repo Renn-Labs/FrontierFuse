@@ -10,7 +10,7 @@ __pycache__/
 venv/
 *.log
 
-# local orchestration/session state (lives under ~/.config/fable-fuse; never committed)
+# local orchestration/session state (lives under ~/.config/frontier-fuse; never committed)
 .omc/
 .omx/
 .grokprint/
@@ -18,4 +18,4 @@ venv/
 # raw build-in-public journal; local source material, not public release history
 .buildlog/
 
-# NOTE: skills/fablefuse/ IS source and is intentionally NOT ignored.
+# NOTE: skills/frontierfuse/ IS source and is intentionally NOT ignored.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate offline contract runner for FableFuse.
+"""Aggregate offline contract runner for FrontierFuse.
 
 Discovers every tests/*_contracts.py suite (excluding this file) in deterministic
 order, runs each in a subprocess, streams stdout/stderr, and exits nonzero if
@@ -114,10 +114,10 @@ def _self_test() -> None:
         rc = run_all(tests_dir=tdir, cwd=tdir)
         assert rc == 1, f"failing suite should exit 1, got {rc}"
 
-    # Live discovery in this repo must include fable_contracts.py and exclude self
+    # Live discovery in this repo must include frontier_contracts.py and exclude self
     live = discover_suites(HERE)
     live_names = [p.name for p in live]
-    assert "fable_contracts.py" in live_names, live_names
+    assert "frontier_contracts.py" in live_names, live_names
     assert SELF_NAME not in live_names
     assert live_names == sorted(live_names)
 

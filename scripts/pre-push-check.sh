@@ -22,8 +22,8 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "$1 is required"
 }
 
-if [[ "${FABLE_SKIP_PRE_PUSH:-}" == "1" ]]; then
-  echo "pre-push: skipped because FABLE_SKIP_PRE_PUSH=1"
+if [[ "${FRONTIER_SKIP_PRE_PUSH:-}" == "1" ]]; then
+  echo "pre-push: skipped because FRONTIER_SKIP_PRE_PUSH=1"
   exit 0
 fi
 
@@ -70,10 +70,15 @@ if market.get("version") != version:
 if plugin_entry.get("version") != version:
     errors.append("marketplace plugin entry version does not match plugin.json")
 
-mcp_source = Path("fable_advisor_mcp.py").read_text()
+mcp_source = Path("frontier_advisor_mcp.py").read_text()
 mcp_version = re.search(r'^SERVER_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', mcp_source, re.MULTILINE)
 if not mcp_version or mcp_version.group(1) != version:
-    errors.append("fable_advisor_mcp.py SERVER_VERSION does not match plugin.json")
+    errors.append("frontier_advisor_mcp.py SERVER_VERSION does not match plugin.json")
+
+update_source = Path("frontier_update.py").read_text()
+update_version = re.search(r'^CURRENT_VERSION\s*=\s*["\x27]([^"\x27]+)["\x27]', update_source, re.MULTILINE)
+if not update_version or update_version.group(1) != version:
+    errors.append("frontier_update.py CURRENT_VERSION does not match plugin.json")
 
 changelog = Path("CHANGELOG.md").read_text()
 if f"## [{version}] - " not in changelog:
@@ -81,18 +86,20 @@ if f"## [{version}] - " not in changelog:
 
 readme = Path("README.md").read_text()
 for needle in (
-    "/plugin marketplace add Renn-Labs/FableFuse",
-    "/plugin install fablefuse@fablefuse",
+    "/plugin marketplace add Renn-Labs/FrontierFuse",
+    "/plugin install frontierfuse@frontierfuse",
     "/reload-plugins",
-    "fable-dispatch arm --gate",
-    "fable-dispatch verify",
+    "frontier-dispatch arm --gate",
+    "frontier-dispatch verify",
+    "frontier-dispatch doctor --check-updates",
+    "frontier-dispatch update --check",
+    "codex mcp add frontier-advisor",
+    "grok mcp add frontier-advisor",
+    "git pull --ff-only",
     version,
 ):
     if needle not in readme:
         errors.append(f"README.md install/upgrade docs are missing {needle!r}")
-
-if "gpt-5.6" in readme.lower() and "limited preview" not in readme.lower():
-    errors.append("README.md mentions GPT-5.6 without labeling its limited-preview availability")
 
 truth_surface = "\n".join(
     Path(path).read_text()
@@ -100,8 +107,8 @@ truth_surface = "\n".join(
         "README.md",
         "SECURITY.md",
         "docs/DESIGN.md",
-        "skills/fablefuse/SKILL.md",
-        "skills/fablefuse-config/SKILL.md",
+        "skills/frontierfuse/SKILL.md",
+        "skills/frontierfuse-config/SKILL.md",
         ".claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json",
         "hooks/hooks.json",
@@ -166,20 +173,20 @@ step "market model names"
 if git grep -n -E 'claude-opus-5|Opus 5|grok-5|Grok 5|gpt-5\.6-soul|GPT-5\.6 Soul' -- \
   '*.py' '*.md' '*.json' '*.sh' \
   ':!scripts/pre-push-check.sh' \
-  ':!CHANGELOG.md' >/tmp/fable-model-name-grep.$$; then
-  cat /tmp/fable-model-name-grep.$$ >&2
-  rm -f /tmp/fable-model-name-grep.$$
+  ':!CHANGELOG.md' >/tmp/frontier-model-name-grep.$$; then
+  cat /tmp/frontier-model-name-grep.$$ >&2
+  rm -f /tmp/frontier-model-name-grep.$$
   fail "found an unverified or misspelled model reference"
 fi
-rm -f /tmp/fable-model-name-grep.$$
+rm -f /tmp/frontier-model-name-grep.$$
 
 step "whitespace"
 git diff --check
 
 step "byte compile"
 python3 -m compileall -q \
-  fable_common.py fable_advisor.py fable_advisor_mcp.py fable_dispatch.py \
-  fable_verify.py fable_scrub.py hooks tests
+  frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py \
+  frontier_verify.py frontier_scrub.py hooks tests
 
 step "offline contracts (aggregate)"
 python3 tests/run_contracts.py
@@ -191,23 +198,36 @@ step "plugin validation"
 claude plugin validate .
 
 step "foundation smoke"
-python3 fable_common.py >/dev/null
+python3 frontier_common.py >/dev/null
 
-step "opus lead dry-run smoke"
+step "portable command shims"
+bin/frontier-dispatch --help >/dev/null
+FRONTIER_ADVISOR_CMD=echo bin/ask-frontier "pre-push advisor shim smoke" >/dev/null
+
+step "claude executor with opus model dry-run smoke"
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
-FABLE_CONFIG_DIR="$tmpdir/config" FABLE_STATE_DIR="$tmpdir/state" FABLE_RUNS_DIR="$tmpdir/runs" \
-  python3 fable_dispatch.py --dry-run --executor opus --opus-model claude-opus-4-8 \
-  "pre-push smoke: Opus lead with Fable advisor" >/dev/null
+FRONTIER_CONFIG_DIR="$tmpdir/config" FRONTIER_STATE_DIR="$tmpdir/state" FRONTIER_RUNS_DIR="$tmpdir/runs" \
+  python3 frontier_dispatch.py --dry-run --executor claude --model claude-opus-4-8 \
+  "pre-push smoke: Claude executor with Opus model" >/dev/null
 
 step "grok lead dry-run smoke"
 grok_smoke="$(
-  FABLE_CONFIG_DIR="$tmpdir/config" FABLE_STATE_DIR="$tmpdir/state" FABLE_RUNS_DIR="$tmpdir/runs" \
-    python3 fable_dispatch.py --dry-run --executor grok --grok-model grok-4.5 \
-    "pre-push smoke: Grok lead with Fable advisor"
+  FRONTIER_CONFIG_DIR="$tmpdir/config" FRONTIER_STATE_DIR="$tmpdir/state" FRONTIER_RUNS_DIR="$tmpdir/runs" \
+    python3 frontier_dispatch.py --dry-run --executor grok --grok-model grok-4.5 \
+    "pre-push smoke: Grok executor with Fable advisor"
 )"
 printf '%s\n' "$grok_smoke" | grep -q 'grok --model grok-4.5' || fail "grok smoke did not select grok-4.5"
 printf '%s\n' "$grok_smoke" | grep -q -- '--prompt-file <prompt-file>' || fail "grok smoke did not use prompt-file"
+
+step "gemini executor dry-run smoke"
+gemini_smoke="$(
+  FRONTIER_CONFIG_DIR="$tmpdir/config" FRONTIER_STATE_DIR="$tmpdir/state" FRONTIER_RUNS_DIR="$tmpdir/runs" \
+    python3 frontier_dispatch.py --dry-run --executor gemini --gemini-model gemini-3.5-flash \
+    "pre-push smoke: Gemini executor with Fable advisor"
+)"
+printf '%s\n' "$gemini_smoke" | grep -q 'gemini --model gemini-3.5-flash' \
+  || fail "gemini smoke did not select gemini-3.5-flash"
 
 # Doctor never hits live providers. Exit 1 means the configured body CLI is not
 # on PATH (NOT READY) — common on partial installs and not a release-scrub
@@ -215,7 +235,7 @@ printf '%s\n' "$grok_smoke" | grep -q -- '--prompt-file <prompt-file>' || fail "
 # Output must include an explicit readiness line so a silent crash cannot pass.
 step "doctor (readiness; exit 1 = body CLI missing, non-blocking)"
 set +e
-doctor_out="$(python3 fable_dispatch.py doctor 2>&1)"
+doctor_out="$(python3 frontier_dispatch.py doctor 2>&1)"
 doctor_rc=$?
 set -e
 printf '%s\n' "$doctor_out"

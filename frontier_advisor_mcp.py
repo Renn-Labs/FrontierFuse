@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""fable_advisor_mcp.py — stdio MCP server exposing `ask_fable`.
+"""frontier_advisor_mcp.py - stdio MCP server exposing `ask_frontier`.
 
-This is the advisor-mode primitive: it lets a Codex/Sonnet/Opus (or any) executor main loop consult Fable 5
-ON-DEMAND. The executor runs every turn and does the work; it calls `ask_fable` only when guidance
-materially helps, reducing coordination calls compared with a controller-led loop.
+This advisor-mode primitive lets any supported executor consult the configured frontier model on
+demand. The executor runs every turn and does the work; it calls `ask_frontier` only when guidance
+materially helps.
 
 Register with an executor harness, e.g. Codex:
-  codex mcp add fable-advisor -- python3 /abs/path/fable_advisor_mcp.py
+  codex mcp add frontier-advisor -- python3 /abs/path/frontier_advisor_mcp.py
 
 Minimal JSON-RPC 2.0 over newline-delimited stdio. stdlib-only.
 """
@@ -17,20 +17,20 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import fable_advisor
+import frontier_advisor
 
 PROTO = "2025-06-18"
-SERVER_VERSION = "0.2.6"
+SERVER_VERSION = "0.3.0"
 INSTRUCTIONS = (
-    "Consult Fable 5 (the on-demand ADVISOR) for planning, hard design decisions, architecture "
-    "tradeoffs, and independent verification. YOU (the selected lead/executor) run the main loop and do all the "
-    "work - call ask_fable only when guidance materially helps. Fable advises; it does not execute."
+    "Consult the configured frontier advisor for planning, hard design decisions, architecture "
+    "tradeoffs, and independent review. You are the selected executor: run the main loop and do "
+    "the work. Call ask_frontier only when guidance materially helps."
 )
 TOOLS = [{
-    "name": "ask_fable",
-    "description": ("Consult Fable 5 (on-demand advisor) for concise, actionable guidance to the "
+    "name": "ask_frontier",
+    "description": ("Consult the configured frontier model for concise, actionable guidance to the "
                     "executor: planning, hard decisions, architecture tradeoffs, or independent "
-                    "review. Not for doing the work — you remain the executor."),
+                    "review. Not for doing the work; you remain the executor."),
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -48,7 +48,7 @@ def _send(obj: dict) -> None:
 
 
 def _ask(args: dict) -> str:
-    r = fable_advisor.ask_fable(args.get("question", ""), context=args.get("context", ""))
+    r = frontier_advisor.ask_frontier(args.get("question", ""), context=args.get("context", ""))
     return r.get("advice") or f"(advisor unavailable: {r.get('note')})"
 
 
@@ -66,14 +66,14 @@ def main() -> int:
             _send({"jsonrpc": "2.0", "id": mid,
                    "result": {"protocolVersion": PROTO, "capabilities": {"tools": {}},
                               "instructions": INSTRUCTIONS,
-                              "serverInfo": {"name": "fable-advisor", "version": SERVER_VERSION}}})
+                              "serverInfo": {"name": "frontier-advisor", "version": SERVER_VERSION}}})
         elif method == "notifications/initialized":
             continue
         elif method == "tools/list":
             _send({"jsonrpc": "2.0", "id": mid, "result": {"tools": TOOLS}})
         elif method == "tools/call":
             params = msg.get("params", {})
-            if params.get("name") != "ask_fable":
+            if params.get("name") != "ask_frontier":
                 _send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "unknown tool"}})
                 continue
             try:

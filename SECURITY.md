@@ -1,6 +1,6 @@
 # Security Policy
 
-FableFuse is local-first tooling that shells out to AI coding CLIs. Please help keep it safe.
+FrontierFuse is local-first tooling that shells out to AI coding CLIs. Please help keep it safe.
 
 ## Reporting a vulnerability
 
@@ -12,15 +12,15 @@ Include repro steps and impact. We aim to acknowledge within a few days.
 
 ### Workflow guardrail, not isolation
 
-FableFuse's host hooks are a **workflow guardrail** for Claude Code orchestrator sessions. They
+FrontierFuse's host hooks are a **workflow guardrail** for Claude Code orchestrator sessions. They
 steer the in-session controller away from direct mutation and require a snapshot-bound GREEN before
 a clean stop. They are **not** a sandbox, container, or security isolation boundary.
 
 Anyone who owns the host (or can set env vars / edit settings / run tools outside the hooked
 surface) can:
 
-- set `FABLE_GUARDS_OFF=1` or `CLAUDE_GUARDS_OFF=1` (kill-switch; disables both hooks)
-- `fable-dispatch disarm` from a host shell that is not subject to the PreToolUse policy
+- set `FRONTIER_GUARDS_OFF=1` or `CLAUDE_GUARDS_OFF=1` (kill-switch; disables both hooks)
+- `frontier-dispatch disarm` from a host shell that is not subject to the PreToolUse policy
 - alter or remove hooks, session state, or config
 - run body CLIs or editors outside Claude Code's hooked tool surface
 
@@ -33,8 +33,8 @@ While a session is **armed** on Claude Code's PreToolUse hook:
 
 - file-mutation tools (`Write` / `Edit` / `MultiEdit` / `NotebookEdit`) are denied
 - non-allowlisted Bash is denied (argv-validated; shell chaining rejected)
-- direct body CLI invocation (`codex` / `claude` / `grok` and common wrappers) is denied
-- read-only inspection and the required `fable-dispatch` loop commands remain; `config` is
+- direct body CLI invocation (`codex` / `claude` / `grok` / `gemini` and common wrappers) is denied
+- read-only inspection and the required `frontier-dispatch` loop commands remain; `config` is
   read-only while armed
 
 The Stop hook blocks a clean finish unless a **fresh snapshot-bound GREEN** exists (zero gate exit,
@@ -46,12 +46,12 @@ loop.
 The host freezes the exact acceptance command at arm time:
 
 ```bash
-fable-dispatch arm --gate "<single argv command>" [--cwd PATH]
+frontier-dispatch arm --gate "<single argv command>" [--cwd PATH]
 ```
 
-While armed, the controller calls `fable-dispatch verify` without `--gate` or `--cwd`; any
+While armed, the controller calls `frontier-dispatch verify` without `--gate` or `--cwd`; any
 restatement or replacement is refused. Default gate execution uses `shell=False` (argv). The
-`--legacy-shell` / `FABLE_VERIFY_LEGACY_SHELL=1` path is explicit **unsafe compatibility** and
+`--legacy-shell` / `FRONTIER_VERIFY_LEGACY_SHELL=1` path is explicit **unsafe compatibility** and
 **cannot** satisfy the hardened close.
 
 A closable arm requires a Git worktree. The receipt is bound to the arm-time argv and cwd, and
@@ -60,21 +60,21 @@ and cache paths are intentionally excluded so normal tools do not make every ver
 
 ### Body permissions (opt-in autonomy)
 
-By default (0.2.6+), body CLIs inherit **provider defaults** — FableFuse does **not** add
+By default, body CLIs inherit **provider defaults** - FrontierFuse does **not** add
 autonomous elevated flags unless the host opts in:
 
 | Env | Effect when set |
 |-|-|
-| `FABLE_CODEX_YOLO=1` | adds Codex `--yolo` |
-| `FABLE_GROK_YOLO=1` | adds Grok `--permission-mode bypassPermissions` |
-| `FABLE_GROK_PERMISSION_MODE=<mode>` | explicit Grok permission mode |
+| `FRONTIER_CODEX_YOLO=1` | adds Codex `--yolo` |
+| `FRONTIER_GROK_YOLO=1` | adds Grok `--permission-mode bypassPermissions` |
+| `FRONTIER_GROK_PERMISSION_MODE=<mode>` | explicit Grok permission mode |
 
 Only point any lead/body executor at repositories you trust, and review diffs.
 
 ### Data leaving the machine
 
 Cross-provider prompts and context leave the local machine when a body/advisor CLI calls a remote
-provider. **Provider terms, logging, and retention apply.** FableFuse does not re-implement
+provider. **Provider terms, logging, and retention apply.** FrontierFuse does not re-implement
 provider privacy policy.
 
 Local state and artifacts (session state, config, `runs/`, `verdict.json`, managed prompt files)
@@ -90,4 +90,4 @@ review before relying on it.
 
 ## Supported versions
 
-FableFuse is pre-1.0; only the latest `main` is supported.
+FrontierFuse is pre-1.0; only the latest `main` is supported.

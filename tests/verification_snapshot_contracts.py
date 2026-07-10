@@ -17,23 +17,23 @@ import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_TMP = tempfile.mkdtemp(prefix="fable-snap-contract-")
-os.environ["FABLE_CONFIG_DIR"] = str(Path(_TMP) / "config")
-os.environ["FABLE_STATE_DIR"] = str(Path(_TMP) / "state")
-os.environ["FABLE_RUNS_DIR"] = str(Path(_TMP) / "runs")
-os.environ["FABLE_CODEX_CMD"] = "echo"
-os.environ["FABLE_ADVISOR_CMD"] = "echo"
+_TMP = tempfile.mkdtemp(prefix="frontier-snap-contract-")
+os.environ["FRONTIER_CONFIG_DIR"] = str(Path(_TMP) / "config")
+os.environ["FRONTIER_STATE_DIR"] = str(Path(_TMP) / "state")
+os.environ["FRONTIER_RUNS_DIR"] = str(Path(_TMP) / "runs")
+os.environ["FRONTIER_CODEX_CMD"] = "echo"
+os.environ["FRONTIER_ADVISOR_CMD"] = "echo"
 # Ensure guards are on for Stop-hook tests unless a case overrides.
-os.environ.pop("FABLE_GUARDS_OFF", None)
+os.environ.pop("FRONTIER_GUARDS_OFF", None)
 os.environ.pop("CLAUDE_GUARDS_OFF", None)
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import fable_common as fc  # noqa: E402
-import fable_verify as fv  # noqa: E402
+import frontier_common as fc  # noqa: E402
+import frontier_verify as fv  # noqa: E402
 
-STOP_HOOK = ROOT / "hooks" / "fable_verify_gate.py"
+STOP_HOOK = ROOT / "hooks" / "frontier_verify_gate.py"
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -48,7 +48,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _init_repo() -> Path:
-    repo = Path(tempfile.mkdtemp(prefix="fable-snap-repo-"))
+    repo = Path(tempfile.mkdtemp(prefix="frontier-snap-repo-"))
     _git(repo, "init")
     _git(repo, "config", "user.email", "snap@test.local")
     _git(repo, "config", "user.name", "Snap Test")
@@ -62,7 +62,7 @@ def _init_repo() -> Path:
 
 def _run_stop(session_id: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env.pop("FABLE_GUARDS_OFF", None)
+    env.pop("FRONTIER_GUARDS_OFF", None)
     env.pop("CLAUDE_GUARDS_OFF", None)
     return subprocess.run(
         [sys.executable, str(STOP_HOOK)],
@@ -199,7 +199,7 @@ def test_red_on_nonzero_exit() -> None:
 
 def test_non_git_workspace_cannot_green() -> None:
     """A hardened close requires a Git worktree, not an empty best-effort snapshot."""
-    workspace = Path(tempfile.mkdtemp(prefix="fable-snap-non-git-"))
+    workspace = Path(tempfile.mkdtemp(prefix="frontier-snap-non-git-"))
     sid = "snap-non-git"
     fc.clear_state(sid)
     try:
@@ -491,7 +491,7 @@ def test_dispatch_timestamp_compat() -> None:
         )
         proc = _run_stop(sid, cwd=repo)
         assert proc.returncode == 2
-        # Inclusive equality still works (matches fable_common contract).
+        # Inclusive equality still works (matches frontier_common contract).
         fc.write_state(
             sid,
             armed=True,
@@ -594,12 +594,12 @@ def test_cli_legacy_shell_flag() -> None:
     sid = "snap-cli-legacy"
     fc.clear_state(sid)
     env = os.environ.copy()
-    env["FABLE_SESSION_ID"] = sid
+    env["FRONTIER_SESSION_ID"] = sid
     try:
         proc = subprocess.run(
             [
                 sys.executable,
-                str(ROOT / "fable_verify.py"),
+                str(ROOT / "frontier_verify.py"),
                 "--gate",
                 "true",
                 "--cwd",

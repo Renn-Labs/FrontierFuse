@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Standalone stdlib regression suite for the armed-controller Bash command policy (0.2.6).
 
-Hostile and allowed cases for hooks/fable_gate.py. No live providers. Prints PASS only when
+Hostile and allowed cases for hooks/frontier_gate.py. No live providers. Prints PASS only when
 every assertion succeeds; exits non-zero on the first failure.
 """
 from __future__ import annotations
@@ -15,28 +15,28 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_TMP = tempfile.mkdtemp(prefix="fable-gate-sec-")
-os.environ.setdefault("FABLE_CONFIG_DIR", str(Path(_TMP) / "config"))
-os.environ.setdefault("FABLE_STATE_DIR", str(Path(_TMP) / "state"))
-os.environ.setdefault("FABLE_RUNS_DIR", str(Path(_TMP) / "runs"))
-os.environ["FABLE_CODEX_CMD"] = "echo"
-os.environ["FABLE_ADVISOR_CMD"] = "echo"
+_TMP = tempfile.mkdtemp(prefix="frontier-gate-sec-")
+os.environ.setdefault("FRONTIER_CONFIG_DIR", str(Path(_TMP) / "config"))
+os.environ.setdefault("FRONTIER_STATE_DIR", str(Path(_TMP) / "state"))
+os.environ.setdefault("FRONTIER_RUNS_DIR", str(Path(_TMP) / "runs"))
+os.environ["FRONTIER_CODEX_CMD"] = "echo"
+os.environ["FRONTIER_ADVISOR_CMD"] = "echo"
 # Clear optional allowlist so tests see the default structured policy.
-os.environ.pop("FABLE_BASH_ALLOW", None)
-os.environ.pop("FABLE_GUARDS_OFF", None)
+os.environ.pop("FRONTIER_BASH_ALLOW", None)
+os.environ.pop("FRONTIER_GUARDS_OFF", None)
 os.environ.pop("CLAUDE_GUARDS_OFF", None)
-os.environ.pop("FABLE_GATE_ALLOW_TRIVIAL", None)
+os.environ.pop("FRONTIER_GATE_ALLOW_TRIVIAL", None)
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import fable_common as fc  # noqa: E402
+import frontier_common as fc  # noqa: E402
 
-GATE = ROOT / "hooks" / "fable_gate.py"
+GATE = ROOT / "hooks" / "frontier_gate.py"
 
 
 def _load_gate():
-    spec = importlib.util.spec_from_file_location("fable_gate_sec", GATE)
+    spec = importlib.util.spec_from_file_location("frontier_gate_sec", GATE)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"cannot load {GATE}")
     mod = importlib.util.module_from_spec(spec)
@@ -67,24 +67,27 @@ def _assert_denied(cmd: str, approved_gate: dict | None = None) -> None:
 # --------------------------------------------------------------------------- #
 def test_allowed_loop_commands() -> None:
     for cmd in (
-        "fable-dispatch --help",
-        "fable-dispatch -h",
-        "fable-dispatch help",
-        "fable-dispatch doctor",
-        "fable-dispatch done",
-        "fable-dispatch config",
-        'fable-dispatch "implement the fix with proof"',
-        "fable-dispatch dispatch \"task one\"",
-        "fable-dispatch --dry-run \"preview only\"",
-        "fable-dispatch --parallel \"a\" \"b\"",
-        "python3 fable_dispatch.py --help",
-        "python3 fable_dispatch.py doctor",
-        'python3 fable_dispatch.py "do the body work"',
-        "python3 ./fable_dispatch.py done",
+        "frontier-dispatch --help",
+        "frontier-dispatch -h",
+        "frontier-dispatch help",
+        "frontier-dispatch doctor",
+        "frontier-dispatch done",
+        "frontier-dispatch config",
+        "frontier-dispatch models",
+        "frontier-dispatch models --provider claude --no-discover --json",
+        'frontier-dispatch "implement the fix with proof"',
+        "frontier-dispatch dispatch \"task one\"",
+        "frontier-dispatch --dry-run \"preview only\"",
+        "frontier-dispatch --parallel \"a\" \"b\"",
+        "python3 frontier_dispatch.py --help",
+        "python3 frontier_dispatch.py doctor",
+        "python3 frontier_dispatch.py models --provider gemini",
+        'python3 frontier_dispatch.py "do the body work"',
+        "python3 ./frontier_dispatch.py done",
     ):
         _assert_allowed(cmd)
-    _assert_allowed("fable-dispatch verify", APPROVED_GATE)
-    _assert_allowed("python3 fable_dispatch.py verify", APPROVED_GATE)
+    _assert_allowed("frontier-dispatch verify", APPROVED_GATE)
+    _assert_allowed("python3 frontier_dispatch.py verify", APPROVED_GATE)
 
 
 def test_allowed_readonly_inspection() -> None:
@@ -99,9 +102,9 @@ def test_allowed_readonly_inspection() -> None:
         "cat README.md",
         "rg TODO",
         "grep -n pattern file.py",
-        "head -n 20 hooks/fable_gate.py",
+        "head -n 20 hooks/frontier_gate.py",
         "tail -5 CHANGELOG.md",
-        "wc -l fable_dispatch.py hooks/fable_gate.py fable_common.py",
+        "wc -l frontier_dispatch.py hooks/frontier_gate.py frontier_common.py",
         "pwd",
         "echo hello",
         "find . -name '*.py' -type f",
@@ -121,6 +124,8 @@ def test_deny_direct_body_clis() -> None:
         "grok",
         "claude -p 'hi'",
         "claude",
+        "gemini --model gemini-3.5-flash --prompt hi",
+        "gemini",
         "./codex exec",
         "bin/grok",
         "vendor/claude",
@@ -133,13 +138,16 @@ def test_deny_direct_body_clis() -> None:
 
 def test_deny_disarm_and_gate_toggles() -> None:
     for cmd in (
-        "fable-dispatch disarm",
-        "python3 fable_dispatch.py disarm",
-        "fable-dispatch arm",
-        "python3 fable_dispatch.py arm",
-        "fable-dispatch install-hooks",
-        "fable-dispatch uninstall-hooks",
-        "python3 fable_dispatch.py install-hooks",
+        "frontier-dispatch disarm",
+        "python3 frontier_dispatch.py disarm",
+        "frontier-dispatch arm",
+        "python3 frontier_dispatch.py arm",
+        "frontier-dispatch install-hooks",
+        "frontier-dispatch uninstall-hooks",
+        "python3 frontier_dispatch.py install-hooks",
+        "frontier-dispatch update",
+        "frontier-dispatch update --check",
+        "python3 frontier_dispatch.py update --check --force",
     ):
         _assert_denied(cmd)
 
@@ -158,9 +166,9 @@ def test_deny_shell_separators_and_substitution() -> None:
         "git status >> /tmp/out",
         "cat < /etc/passwd",
         "git status &",
-        "python3 fable_dispatch.py --help && rm -rf /tmp/x",
-        "FABLE_GUARDS_OFF=1 python3 fable_dispatch.py --help; rm -rf /tmp/x",
-        "fable-dispatch doctor | tee /tmp/x",
+        "python3 frontier_dispatch.py --help && rm -rf /tmp/x",
+        "FRONTIER_GUARDS_OFF=1 python3 frontier_dispatch.py --help; rm -rf /tmp/x",
+        "frontier-dispatch doctor | tee /tmp/x",
         "echo $(codex exec)",
     ):
         _assert_denied(cmd)
@@ -179,18 +187,18 @@ def test_deny_pipelines_into_mutators() -> None:
 def test_deny_wrappers_and_interpreters() -> None:
     for cmd in (
         "bash -c 'codex exec'",
-        "sh -c 'fable-dispatch disarm'",
+        "sh -c 'frontier-dispatch disarm'",
         "zsh -c 'rm -rf /'",
         "env codex exec",
-        "sudo fable-dispatch disarm",
+        "sudo frontier-dispatch disarm",
         "xargs codex",
         "nohup codex",
         "python3 -c 'import os; os.system(\"codex\")'",
         "python -c 'print(1)'",
         "python3 -m http.server",
         "python3 -",
-        "source fable_dispatch.py",
-        ". fable_dispatch.py",
+        "source frontier_dispatch.py",
+        ". frontier_dispatch.py",
         "perl -e 'system(\"codex\")'",
         "node -e 'require(\"fs\")'",
         "ruby -e 'system(\"codex\")'",
@@ -204,14 +212,14 @@ def test_deny_misleading_prefixes_and_traversal() -> None:
         # path traversal toward a denied binary or fake project script
         "../codex exec",
         "../../bin/codex",
-        "python3 ../fable_dispatch.py disarm",
-        "python3 hooks/../fable_dispatch.py disarm",
-        "python3 /tmp/fable_dispatch.py doctor",
+        "python3 ../frontier_dispatch.py disarm",
+        "python3 hooks/../frontier_dispatch.py disarm",
+        "python3 /tmp/frontier_dispatch.py doctor",
         "python3 /etc/passwd",
         "~/bin/codex",
-        "python3 ./fable_verify.py/../../../usr/bin/codex",
+        "python3 ./frontier_verify.py/../../../usr/bin/codex",
         # absolute "project" scripts outside the workspace
-        "/tmp/evil/fable_verify.py --gate true",
+        "/tmp/evil/frontier_verify.py --gate true",
         "/private-path doctor",
     ):
         _assert_denied(cmd)
@@ -234,27 +242,29 @@ def test_deny_find_mutating_actions() -> None:
 
 def test_deny_unsafe_verify_and_dispatch_shapes() -> None:
     for cmd in (
-        "fable-dispatch verify",  # no host-frozen gate in policy context
-        "fable-dispatch verify --cwd .",
-        "fable-dispatch verify --gate true",
-        "fable-dispatch verify --gate 'rm -rf .'",
-        "fable-dispatch config --executor codex",
-        "fable-dispatch config --global --effort medium",
-        "python3 fable_verify.py",
-        "python3 fable_verify.py --session default",
-        "python3 fable_verify.py --gate true",
-        "fable-dispatch verify --gate true --unknown-flag",
-        "fable_verify.py --gate true; rm -rf /",
-        "python3 fable_verify.py --gate true --extra evil",
-        "python3 fable_dispatch.py verify --gate true --executor codex",  # verify path: only --gate/--cwd
-        "FOO=bar python3 fable_dispatch.py --help",
-        "FABLE_GUARDS_OFF=1 fable-dispatch doctor",
+        "frontier-dispatch verify",  # no host-frozen gate in policy context
+        "frontier-dispatch verify --cwd .",
+        "frontier-dispatch verify --gate true",
+        "frontier-dispatch verify --gate 'rm -rf .'",
+        "frontier-dispatch config --executor codex",
+        "frontier-dispatch config --global --effort medium",
+        "frontier-dispatch models --provider claude task",
+        "frontier-dispatch models --unknown",
+        "python3 frontier_verify.py",
+        "python3 frontier_verify.py --session default",
+        "python3 frontier_verify.py --gate true",
+        "frontier-dispatch verify --gate true --unknown-flag",
+        "frontier_verify.py --gate true; rm -rf /",
+        "python3 frontier_verify.py --gate true --extra evil",
+        "python3 frontier_dispatch.py verify --gate true --executor codex",  # verify path: only --gate/--cwd
+        "FOO=bar python3 frontier_dispatch.py --help",
+        "FRONTIER_GUARDS_OFF=1 frontier-dispatch doctor",
     ):
         _assert_denied(cmd)
 
     # Even with a frozen gate, the controller cannot replace its argv or workspace.
-    _assert_denied("fable-dispatch verify --gate true", APPROVED_GATE)
-    _assert_denied("fable-dispatch verify --cwd .", APPROVED_GATE)
+    _assert_denied("frontier-dispatch verify --gate true", APPROVED_GATE)
+    _assert_denied("frontier-dispatch verify --cwd .", APPROVED_GATE)
 
 
 def test_deny_git_mutating_and_write_flags() -> None:
@@ -303,12 +313,12 @@ def test_deny_empty_and_garbage() -> None:
         _assert_denied(cmd)
 
 
-def test_fable_bash_allow_is_cautious() -> None:
+def test_frontier_bash_allow_is_cautious() -> None:
     """Whole-command/prefix overrides are ignored; only exact safe basenames extend policy."""
-    old = os.environ.get("FABLE_BASH_ALLOW")
+    old = os.environ.get("FRONTIER_BASH_ALLOW")
     try:
         # Prefix-style entries must NOT re-open prefix matching.
-        os.environ["FABLE_BASH_ALLOW"] = "git status,codex,mytool"
+        os.environ["FRONTIER_BASH_ALLOW"] = "git status,codex,mytool"
         # Reload policy reads env each call — codex must stay denied.
         _assert_denied("codex exec")
         _assert_denied("git status-evil")
@@ -316,14 +326,14 @@ def test_fable_bash_allow_is_cautious() -> None:
         _assert(allowed("mytool") is True, "exact basename extra should allow mytool")
         _assert_denied("mytool -c 'evil'")
         # denied binary cannot be re-enabled
-        os.environ["FABLE_BASH_ALLOW"] = "codex,grok,claude,bash"
+        os.environ["FRONTIER_BASH_ALLOW"] = "codex,grok,claude,gemini,bash"
         _assert_denied("codex")
         _assert_denied("bash")
     finally:
         if old is None:
-            os.environ.pop("FABLE_BASH_ALLOW", None)
+            os.environ.pop("FRONTIER_BASH_ALLOW", None)
         else:
-            os.environ["FABLE_BASH_ALLOW"] = old
+            os.environ["FRONTIER_BASH_ALLOW"] = old
 
 
 # --------------------------------------------------------------------------- #
@@ -331,10 +341,10 @@ def test_fable_bash_allow_is_cautious() -> None:
 # --------------------------------------------------------------------------- #
 def _run_hook(payload: dict, extra_env: dict | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
-    env.pop("FABLE_GUARDS_OFF", None)
+    env.pop("FRONTIER_GUARDS_OFF", None)
     env.pop("CLAUDE_GUARDS_OFF", None)
-    env.pop("FABLE_GATE_ALLOW_TRIVIAL", None)
-    env.pop("FABLE_BASH_ALLOW", None)
+    env.pop("FRONTIER_GATE_ALLOW_TRIVIAL", None)
+    env.pop("FRONTIER_BASH_ALLOW", None)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
@@ -372,7 +382,7 @@ def test_hook_armed_enforces_policy() -> None:
         proc = _run_hook({
             "session_id": sid,
             "tool_name": "Bash",
-            "tool_input": {"command": "fable-dispatch doctor"},
+            "tool_input": {"command": "frontier-dispatch doctor"},
         })
         _assert(_hook_allowed(proc), f"doctor should allow: {proc.stdout!r} {proc.stderr!r}")
 
@@ -386,14 +396,14 @@ def test_hook_armed_enforces_policy() -> None:
         proc = _run_hook({
             "session_id": sid,
             "tool_name": "Bash",
-            "tool_input": {"command": "fable-dispatch verify"},
+            "tool_input": {"command": "frontier-dispatch verify"},
         })
         _assert(_hook_allowed(proc), f"frozen verify should allow: {proc.stdout!r}")
 
         proc = _run_hook({
             "session_id": sid,
             "tool_name": "Bash",
-            "tool_input": {"command": "fable-dispatch verify --gate 'rm -rf .'"},
+            "tool_input": {"command": "frontier-dispatch verify --gate 'rm -rf .'"},
         })
         _assert(_denied(proc), f"replacement gate should deny: {proc.stdout!r}")
 
@@ -409,7 +419,7 @@ def test_hook_armed_enforces_policy() -> None:
         proc = _run_hook({
             "session_id": sid,
             "tool_name": "Bash",
-            "tool_input": {"command": "fable-dispatch disarm"},
+            "tool_input": {"command": "frontier-dispatch disarm"},
         })
         _assert(_denied(proc), f"disarm should deny: {proc.stdout!r}")
 
@@ -433,9 +443,9 @@ def test_hook_kill_switches_and_trivial_escape() -> None:
         proc = _run_hook(
             {"session_id": sid, "tool_name": "Write",
              "tool_input": {"file_path": "/tmp/x", "content": "y"}},
-            extra_env={"FABLE_GUARDS_OFF": "1"},
+            extra_env={"FRONTIER_GUARDS_OFF": "1"},
         )
-        _assert(_hook_allowed(proc), f"FABLE_GUARDS_OFF should allow Write: {proc.stdout!r}")
+        _assert(_hook_allowed(proc), f"FRONTIER_GUARDS_OFF should allow Write: {proc.stdout!r}")
 
         proc = _run_hook(
             {"session_id": sid, "tool_name": "Bash",
@@ -447,7 +457,7 @@ def test_hook_kill_switches_and_trivial_escape() -> None:
         proc = _run_hook(
             {"session_id": sid, "tool_name": "Edit",
              "tool_input": {"file_path": "/tmp/x", "old_string": "a", "new_string": "b"}},
-            extra_env={"FABLE_GATE_ALLOW_TRIVIAL": "1"},
+            extra_env={"FRONTIER_GATE_ALLOW_TRIVIAL": "1"},
         )
         _assert(_hook_allowed(proc), f"trivial-edit escape should allow Edit: {proc.stdout!r}")
 
@@ -455,7 +465,7 @@ def test_hook_kill_switches_and_trivial_escape() -> None:
         proc = _run_hook(
             {"session_id": sid, "tool_name": "Bash",
              "tool_input": {"command": "codex exec"}},
-            extra_env={"FABLE_GATE_ALLOW_TRIVIAL": "1"},
+            extra_env={"FRONTIER_GATE_ALLOW_TRIVIAL": "1"},
         )
         _assert(_denied(proc), f"trivial escape must not allow codex: {proc.stdout!r}")
     finally:
@@ -498,7 +508,7 @@ def main() -> int:
         test_deny_git_mutating_and_write_flags,
         test_deny_rg_preprocessor_wrappers,
         test_deny_empty_and_garbage,
-        test_fable_bash_allow_is_cautious,
+        test_frontier_bash_allow_is_cautious,
         test_hook_armed_enforces_policy,
         test_hook_kill_switches_and_trivial_escape,
         test_hook_unarmed_allows_everything,

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""fable_gate.py - PreToolUse workflow guardrail for FableFuse orchestrator mode.
+"""frontier_gate.py - PreToolUse workflow guardrail for FrontierFuse orchestrator mode.
 
-Inert unless the session is armed (`fable-dispatch arm`) and guards are on. When armed, the brain
+Inert unless the session is armed (`frontier-dispatch arm`) and guards are on. When armed, the brain
 must not execute/mutate directly — it delegates to the body. Blocks file-mutation tools and
-non-allowlisted Bash, steering to `fable-dispatch`. Read-only inspection stays allowed (the brain
+non-allowlisted Bash, steering to `frontier-dispatch`. Read-only inspection stays allowed (the brain
 reads and reasons). Narrowed per council review: mutation tools + a Bash command policy, not a
 blanket "heavy Bash" block. Denies via the Claude Code JSON permission decision.
 
-v0.2.6: Bash decisions use parsed argv validation (stdlib shlex) rather than broad string prefixes.
-While armed, direct codex/grok/claude body CLIs are denied, as is `fable-dispatch disarm`.
+Direct codex/grok/claude/gemini body CLIs are denied while armed, as is
+`frontier-dispatch disarm`.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-import fable_common as fc
+import frontier_common as fc
 
 BLOCK_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
@@ -30,14 +30,14 @@ BLOCK_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 # Checked against the ORIGINAL (un-normalized) string.
 _DANGEROUS_SHELL_TOKENS = (";", "&&", "||", "|", "`", "$(", "\n", "\r", ">", "<", "&")
 
-# Real dogfooding showed agents invoke scripts as `python3 fable_dispatch.py ...`. Python script
+# Real dogfooding showed agents invoke scripts as `python3 frontier_dispatch.py ...`. Python script
 # invocation remains supported, but leading environment assignments are denied while armed because
 # variables such as GIT_EXTERNAL_DIFF and provider-specific overrides can execute arbitrary code.
 _LEADING_ENV_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\S*\s+")
 
 # Direct body/host CLIs and common wrapper/mutator binaries — never allowed while armed.
 _DENIED_BINARIES = frozenset({
-    "codex", "grok", "claude",
+    "codex", "grok", "claude", "gemini",
     "bash", "sh", "zsh", "dash", "ksh", "fish", "csh", "tcsh",
     "sudo", "doas", "su",
     "env", "xargs", "nohup", "nice", "timeout", "stdbuf", "script",
@@ -63,31 +63,31 @@ _FIND_DANGEROUS = frozenset({
     "-fprint", "-fprintf", "-fls",
 })
 
-# Loop-safe fable-dispatch subcommands while the controller is armed.
+# Loop-safe frontier-dispatch subcommands while the controller is armed.
 # disarm is an explicit host-side escape — never from the model tool path.
 # arm is unnecessary once armed and is denied so the model cannot re-toggle gate state.
 # install-hooks / uninstall-hooks mutate host settings — denied.
 _DISPATCH_ALLOWED_SUBS = frozenset({
-    "dispatch", "verify", "done", "config", "doctor",
+    "dispatch", "verify", "done", "config", "models", "doctor",
 })
 _DISPATCH_DENIED_SUBS = frozenset({
-    "arm", "disarm", "install-hooks", "uninstall-hooks",
+    "arm", "disarm", "update", "install-hooks", "uninstall-hooks",
 })
 _DISPATCH_ALL_SUBS = _DISPATCH_ALLOWED_SUBS | _DISPATCH_DENIED_SUBS
 
 _HELP_FLAGS = frozenset({"-h", "--help"})
-_PROJECT_DISPATCH_NAMES = frozenset({"fable-dispatch", "fable_dispatch.py"})
-_PROJECT_VERIFY_NAMES = frozenset({"fable_verify.py"})
+_PROJECT_DISPATCH_NAMES = frozenset({"frontier-dispatch", "frontier_dispatch.py"})
+_PROJECT_VERIFY_NAMES = frozenset({"frontier_verify.py"})
 _PYTHON_INTERPRETERS = frozenset({"python", "python3"})
 
-# Flags accepted on the shared fable-dispatch argparse surface for allowed subcommands.
+# Flags accepted on the shared frontier-dispatch argparse surface for allowed subcommands.
 _DISPATCH_FLAGS_WITH_VALUE = frozenset({"--timeout", "--budget-usd", "--fanout"})
 _DISPATCH_FLAGS_BOOL = frozenset({"--parallel", "-p", "--dry-run"})
 
-MSG = ("FableFuse workflow guardrail: the controller does not execute/mutate directly. Delegate to the body via "
-       "`fable-dispatch \"<spec: goal, paths, constraints, non-goals, proof command>\"` (or "
-       "--parallel), then run the verification command frozen by the host with `fable-dispatch verify`. "
-       "Tiny (<~20-line) obvious edits: set FABLE_GATE_ALLOW_TRIVIAL=1. Kill-switch: FABLE_GUARDS_OFF=1.")
+MSG = ("FrontierFuse workflow guardrail: the controller does not execute/mutate directly. Delegate to the body via "
+       "`frontier-dispatch \"<spec: goal, paths, constraints, non-goals, proof command>\"` (or "
+       "--parallel), then run the verification command frozen by the host with `frontier-dispatch verify`. "
+       "Tiny (<~20-line) obvious edits: set FRONTIER_GATE_ALLOW_TRIVIAL=1. Kill-switch: FRONTIER_GUARDS_OFF=1.")
 
 
 def _allow() -> None:
@@ -160,12 +160,12 @@ def _parse_argv(cmd: str) -> list[str] | None:
 
 
 def _extra_allow_basenames() -> frozenset[str]:
-    """Optional FABLE_BASH_ALLOW: cautious exact-basename extensions only (not prefixes).
+    """Optional FRONTIER_BASH_ALLOW: cautious exact-basename extensions only (not prefixes).
 
     Entries with spaces or path separators are ignored — whole-command / prefix overrides are
     no longer honored. Denied binaries can never be re-enabled through this env var.
     """
-    raw = os.environ.get("FABLE_BASH_ALLOW")
+    raw = os.environ.get("FRONTIER_BASH_ALLOW")
     if raw is None or not raw.strip():
         return frozenset()
     out: set[str] = set()
@@ -258,6 +258,14 @@ def _dispatch_argv_allowed(args: list[str], approved_gate: dict | None = None) -
         # Read-only effective-config inspection is allowed. Reconfiguration must happen before arm
         # through the explicit config skill or host CLI.
         return not rest or all(a in _HELP_FLAGS for a in rest)
+
+    if sub == "models":
+        return _flags_with_values_ok(
+            rest,
+            with_value=frozenset({"--provider"}),
+            boolean=frozenset({"--no-discover", "--json", *_HELP_FLAGS}),
+            allow_positionals=False,
+        )
 
     # dispatch (explicit or default)
     return _flags_with_values_ok(
@@ -430,7 +438,7 @@ def _readonly_tool_allowed(base: str, argv: list[str]) -> bool:
 def bash_command_allowed(cmd: str, approved_gate: dict | None = None) -> bool:
     """Return True iff `cmd` is permitted under the armed-controller Bash policy.
 
-    Pure function of the command string (+ optional FABLE_BASH_ALLOW). Does not consult
+    Pure function of the command string (+ optional FRONTIER_BASH_ALLOW). Does not consult
     session armed state or kill switches — callers apply those separately.
     """
     if not cmd or not str(cmd).strip():
@@ -470,7 +478,7 @@ def main() -> None:
     tool = data.get("tool_name", "")
     ti = data.get("tool_input") or {}
     if tool in BLOCK_TOOLS:
-        if fc._as_bool(os.environ.get("FABLE_GATE_ALLOW_TRIVIAL")):
+        if fc._as_bool(os.environ.get("FRONTIER_GATE_ALLOW_TRIVIAL")):
             _allow()
         _deny(f"{tool} blocked. {MSG}")
     if tool == "Bash":

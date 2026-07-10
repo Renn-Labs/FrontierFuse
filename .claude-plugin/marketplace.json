@@ -1,17 +1,17 @@
 {
-  "name": "fablefuse",
-  "description": "FableFuse's own marketplace — Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow.",
+  "name": "frontierfuse",
+  "description": "FrontierFuse marketplace: selectable frontier and executor models across Codex, Claude, Grok, and Gemini.",
   "owner": {
     "name": "Renn Labs",
     "url": "https://github.com/Renn-Labs"
   },
   "plugins": [
     {
-      "name": "fablefuse",
+      "name": "frontierfuse",
       "source": "./",
-      "description": "Fable 5 (brain/advisor) + Codex/Sonnet/Opus/Grok (lead/body/executor), fused into one Claude Code workflow. Advisor (executor-led) and orchestrator (controller-led workflow guardrail) modes.",
-      "version": "0.2.6"
+      "description": "Pair Fable, GPT, Claude, Grok, or Gemini frontier reasoning with a separate Codex, Claude, Grok, or Gemini executor. Includes advisor and orchestrator profiles.",
+      "version": "0.3.0"
     }
   ],
-  "version": "0.2.6"
+  "version": "0.3.0"
 }

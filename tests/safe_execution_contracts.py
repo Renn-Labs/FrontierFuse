@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone stdlib contract tests for FableFuse 0.2.6 safer execution defaults.
+"""Standalone stdlib contract tests for FrontierFuse safer execution defaults.
 
 Covers: default command shapes (no --yolo / no bypassPermissions), explicit opt-ins,
 unknown executor rejection, owner-only permissions, prompt cleanup, timeout process-group
@@ -20,23 +20,23 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-_TMP = tempfile.mkdtemp(prefix="fable-safe-exec-")
-os.environ["FABLE_CONFIG_DIR"] = str(Path(_TMP) / "config")
-os.environ["FABLE_STATE_DIR"] = str(Path(_TMP) / "state")
-os.environ["FABLE_RUNS_DIR"] = str(Path(_TMP) / "runs")
+_TMP = tempfile.mkdtemp(prefix="frontier-safe-exec-")
+os.environ["FRONTIER_CONFIG_DIR"] = str(Path(_TMP) / "config")
+os.environ["FRONTIER_STATE_DIR"] = str(Path(_TMP) / "state")
+os.environ["FRONTIER_RUNS_DIR"] = str(Path(_TMP) / "runs")
 # Clear whole-command overrides so defaults are exercised.
 for _k in (
-    "FABLE_CODEX_CMD", "FABLE_ADVISOR_CMD", "FABLE_BODY_CMD", "FABLE_EXECUTOR_CMD",
-    "FABLE_SONNET_CMD", "FABLE_OPUS_CMD", "FABLE_GROK_CMD",
-    "FABLE_CODEX_YOLO", "FABLE_GROK_YOLO", "FABLE_GROK_PERMISSION_MODE",
-    "FABLE_EXECUTOR",
+    "FRONTIER_CODEX_CMD", "FRONTIER_ADVISOR_CMD", "FRONTIER_BODY_CMD", "FRONTIER_EXECUTOR_CMD",
+    "FRONTIER_CLAUDE_CMD", "FRONTIER_GROK_CMD", "FRONTIER_GEMINI_CMD",
+    "FRONTIER_CODEX_YOLO", "FRONTIER_GROK_YOLO", "FRONTIER_GROK_PERMISSION_MODE",
+    "FRONTIER_EXECUTOR",
 ):
     os.environ.pop(_k, None)
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import fable_common as fc  # noqa: E402
+import frontier_common as fc  # noqa: E402
 
 
 def _env(name: str, value: str | None) -> str | None:
@@ -67,11 +67,13 @@ def _base_cfg(**overrides) -> dict:
         "fast": False,
         "fast_effort": "low",
         "fast_model": "",
-        "fable_model": "claude-fable-5",
+        "frontier_model": "claude-fable-5",
+        "frontier_provider": "claude",
+        "profile": "advisor",
         "executor": "codex",
-        "sonnet_model": "claude-sonnet-5",
-        "opus_model": "claude-opus-4-8",
+        "claude_model": "claude-sonnet-5",
         "grok_model": "grok-4.5",
+        "gemini_model": "gemini-3.5-flash",
     }
     cfg.update(overrides)
     return cfg
@@ -81,8 +83,8 @@ def _base_cfg(**overrides) -> dict:
 # Default command shapes (0.2.6 safer defaults)
 # --------------------------------------------------------------------------- #
 def test_codex_default_omits_yolo() -> None:
-    old = _env("FABLE_CODEX_CMD", None)
-    old_yolo = _env("FABLE_CODEX_YOLO", None)
+    old = _env("FRONTIER_CODEX_CMD", None)
+    old_yolo = _env("FRONTIER_CODEX_YOLO", None)
     try:
         cmd = fc.build_codex_command(_base_cfg())
         assert cmd[0:2] == ["codex", "exec"], cmd
@@ -90,14 +92,14 @@ def test_codex_default_omits_yolo() -> None:
         assert cmd[-1] == "-", cmd  # stdin transport preserved
         assert "-c" in cmd and any(a.startswith("model_reasoning_effort=") for a in cmd), cmd
     finally:
-        _restore("FABLE_CODEX_CMD", old)
-        _restore("FABLE_CODEX_YOLO", old_yolo)
+        _restore("FRONTIER_CODEX_CMD", old)
+        _restore("FRONTIER_CODEX_YOLO", old_yolo)
 
 
 def test_grok_default_omits_bypass_permissions() -> None:
-    old = _env("FABLE_GROK_CMD", None)
-    old_yolo = _env("FABLE_GROK_YOLO", None)
-    old_perm = _env("FABLE_GROK_PERMISSION_MODE", None)
+    old = _env("FRONTIER_GROK_CMD", None)
+    old_yolo = _env("FRONTIER_GROK_YOLO", None)
+    old_perm = _env("FRONTIER_GROK_PERMISSION_MODE", None)
     try:
         cmd = fc.build_grok_command(_base_cfg(executor="grok"))
         assert cmd[0] == "grok", cmd
@@ -105,16 +107,16 @@ def test_grok_default_omits_bypass_permissions() -> None:
         assert "bypassPermissions" not in cmd, cmd
         assert "--prompt-file" in cmd and "{prompt_file}" in cmd, cmd
     finally:
-        _restore("FABLE_GROK_CMD", old)
-        _restore("FABLE_GROK_YOLO", old_yolo)
-        _restore("FABLE_GROK_PERMISSION_MODE", old_perm)
+        _restore("FRONTIER_GROK_CMD", old)
+        _restore("FRONTIER_GROK_YOLO", old_yolo)
+        _restore("FRONTIER_GROK_PERMISSION_MODE", old_perm)
 
 
 def test_body_command_defaults_match_builders() -> None:
-    old_body = _env("FABLE_BODY_CMD", None)
-    old_exec = _env("FABLE_EXECUTOR_CMD", None)
-    old_codex = _env("FABLE_CODEX_CMD", None)
-    old_grok = _env("FABLE_GROK_CMD", None)
+    old_body = _env("FRONTIER_BODY_CMD", None)
+    old_exec = _env("FRONTIER_EXECUTOR_CMD", None)
+    old_codex = _env("FRONTIER_CODEX_CMD", None)
+    old_grok = _env("FRONTIER_GROK_CMD", None)
     try:
         codex = fc.build_body_command(_base_cfg(executor="codex"))
         assert "--yolo" not in codex
@@ -123,18 +125,18 @@ def test_body_command_defaults_match_builders() -> None:
         assert "--permission-mode" not in grok
         assert "{prompt_file}" in grok
     finally:
-        _restore("FABLE_BODY_CMD", old_body)
-        _restore("FABLE_EXECUTOR_CMD", old_exec)
-        _restore("FABLE_CODEX_CMD", old_codex)
-        _restore("FABLE_GROK_CMD", old_grok)
+        _restore("FRONTIER_BODY_CMD", old_body)
+        _restore("FRONTIER_EXECUTOR_CMD", old_exec)
+        _restore("FRONTIER_CODEX_CMD", old_codex)
+        _restore("FRONTIER_GROK_CMD", old_grok)
 
 
 # --------------------------------------------------------------------------- #
 # Explicit opt-ins for autonomous permissions
 # --------------------------------------------------------------------------- #
 def test_codex_yolo_opt_in() -> None:
-    old = _env("FABLE_CODEX_CMD", None)
-    old_yolo = _env("FABLE_CODEX_YOLO", "1")
+    old = _env("FRONTIER_CODEX_CMD", None)
+    old_yolo = _env("FRONTIER_CODEX_YOLO", "1")
     try:
         cmd = fc.build_codex_command(_base_cfg(codex_model="gpt-test"))
         assert "--yolo" in cmd, cmd
@@ -142,48 +144,48 @@ def test_codex_yolo_opt_in() -> None:
             "codex", "exec", "--yolo", "--model", "gpt-test",
             "-c", "model_reasoning_effort=high", "-",
         ], cmd
-        os.environ["FABLE_CODEX_YOLO"] = "0"
+        os.environ["FRONTIER_CODEX_YOLO"] = "0"
         assert "--yolo" not in fc.build_codex_command(_base_cfg())
-        os.environ["FABLE_CODEX_YOLO"] = "false"
+        os.environ["FRONTIER_CODEX_YOLO"] = "false"
         assert "--yolo" not in fc.build_codex_command(_base_cfg())
     finally:
-        _restore("FABLE_CODEX_CMD", old)
-        _restore("FABLE_CODEX_YOLO", old_yolo)
+        _restore("FRONTIER_CODEX_CMD", old)
+        _restore("FRONTIER_CODEX_YOLO", old_yolo)
 
 
 def test_grok_yolo_and_permission_mode_opt_in() -> None:
-    old = _env("FABLE_GROK_CMD", None)
-    old_yolo = _env("FABLE_GROK_YOLO", None)
-    old_perm = _env("FABLE_GROK_PERMISSION_MODE", None)
+    old = _env("FRONTIER_GROK_CMD", None)
+    old_yolo = _env("FRONTIER_GROK_YOLO", None)
+    old_perm = _env("FRONTIER_GROK_PERMISSION_MODE", None)
     try:
-        os.environ["FABLE_GROK_YOLO"] = "1"
+        os.environ["FRONTIER_GROK_YOLO"] = "1"
         cmd = fc.build_grok_command(_base_cfg(executor="grok"))
         assert "--permission-mode" in cmd
         assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
 
-        os.environ["FABLE_GROK_PERMISSION_MODE"] = "auto"
+        os.environ["FRONTIER_GROK_PERMISSION_MODE"] = "auto"
         cmd = fc.build_grok_command(_base_cfg(executor="grok"))
         assert cmd[cmd.index("--permission-mode") + 1] == "auto"
 
         # Explicit mode wins even when YOLO is off.
-        os.environ["FABLE_GROK_YOLO"] = "0"
-        os.environ["FABLE_GROK_PERMISSION_MODE"] = "default"
+        os.environ["FRONTIER_GROK_YOLO"] = "0"
+        os.environ["FRONTIER_GROK_PERMISSION_MODE"] = "default"
         cmd = fc.build_grok_command(_base_cfg(executor="grok"))
         assert cmd[cmd.index("--permission-mode") + 1] == "default"
     finally:
-        _restore("FABLE_GROK_CMD", old)
-        _restore("FABLE_GROK_YOLO", old_yolo)
-        _restore("FABLE_GROK_PERMISSION_MODE", old_perm)
+        _restore("FRONTIER_GROK_CMD", old)
+        _restore("FRONTIER_GROK_YOLO", old_yolo)
+        _restore("FRONTIER_GROK_PERMISSION_MODE", old_perm)
 
 
 # --------------------------------------------------------------------------- #
 # Unknown executor fail-closed
 # --------------------------------------------------------------------------- #
 def test_unknown_executor_rejected() -> None:
-    old_body = _env("FABLE_BODY_CMD", None)
-    old_exec = _env("FABLE_EXECUTOR_CMD", None)
+    old_body = _env("FRONTIER_BODY_CMD", None)
+    old_exec = _env("FRONTIER_EXECUTOR_CMD", None)
     try:
-        for bad in ("custom", "unknown", "claude", "gpt", ""):
+        for bad in ("custom", "unknown", "gpt", ""):
             # empty falls to "codex" via resolve; test raw cfg with bad value
             if bad == "":
                 continue
@@ -194,20 +196,20 @@ def test_unknown_executor_rejected() -> None:
             else:
                 raise AssertionError(f"expected ValueError for executor={bad!r}")
     finally:
-        _restore("FABLE_BODY_CMD", old_body)
-        _restore("FABLE_EXECUTOR_CMD", old_exec)
+        _restore("FRONTIER_BODY_CMD", old_body)
+        _restore("FRONTIER_EXECUTOR_CMD", old_exec)
 
 
 def test_unknown_executor_body_override_still_works() -> None:
     """Whole-command override is trusted and bypasses executor selection."""
-    old_body = _env("FABLE_BODY_CMD", "my-runner --flag")
+    old_body = _env("FRONTIER_BODY_CMD", "my-runner --flag")
     try:
         # Even with a nonsense executor, whole-command override wins first.
         assert fc.build_body_command(_base_cfg(executor="not-a-real-engine")) == [
             "my-runner", "--flag",
         ]
     finally:
-        _restore("FABLE_BODY_CMD", old_body)
+        _restore("FRONTIER_BODY_CMD", old_body)
 
 
 # --------------------------------------------------------------------------- #
@@ -215,28 +217,28 @@ def test_unknown_executor_body_override_still_works() -> None:
 # --------------------------------------------------------------------------- #
 def test_per_engine_and_universal_overrides() -> None:
     keys = [
-        "FABLE_CODEX_CMD", "FABLE_SONNET_CMD", "FABLE_OPUS_CMD", "FABLE_GROK_CMD",
-        "FABLE_BODY_CMD", "FABLE_EXECUTOR_CMD",
+        "FRONTIER_CODEX_CMD", "FRONTIER_CLAUDE_CMD", "FRONTIER_GROK_CMD", "FRONTIER_GEMINI_CMD",
+        "FRONTIER_BODY_CMD", "FRONTIER_EXECUTOR_CMD",
     ]
     olds = {k: _env(k, None) for k in keys}
     try:
-        os.environ["FABLE_CODEX_CMD"] = "codex-shim run"
+        os.environ["FRONTIER_CODEX_CMD"] = "codex-shim run"
         assert fc.build_codex_command(_base_cfg()) == ["codex-shim", "run"]
 
-        os.environ["FABLE_GROK_CMD"] = "grok-shim --x"
+        os.environ["FRONTIER_GROK_CMD"] = "grok-shim --x"
         assert fc.build_grok_command(_base_cfg()) == ["grok-shim", "--x"]
 
-        os.environ["FABLE_SONNET_CMD"] = "sonnet-shim"
-        assert fc.build_sonnet_command(_base_cfg()) == ["sonnet-shim"]
+        os.environ["FRONTIER_CLAUDE_CMD"] = "claude-shim"
+        assert fc.build_claude_command(_base_cfg()) == ["claude-shim"]
 
-        os.environ["FABLE_OPUS_CMD"] = "opus-shim"
-        assert fc.build_opus_command(_base_cfg()) == ["opus-shim"]
+        os.environ["FRONTIER_GEMINI_CMD"] = "gemini-shim"
+        assert fc.build_gemini_command(_base_cfg()) == ["gemini-shim"]
 
-        os.environ.pop("FABLE_BODY_CMD", None)
-        os.environ["FABLE_EXECUTOR_CMD"] = "exec-shim a b"
+        os.environ.pop("FRONTIER_BODY_CMD", None)
+        os.environ["FRONTIER_EXECUTOR_CMD"] = "exec-shim a b"
         assert fc.build_body_command(_base_cfg(executor="grok")) == ["exec-shim", "a", "b"]
 
-        os.environ["FABLE_BODY_CMD"] = "body-wins"
+        os.environ["FRONTIER_BODY_CMD"] = "body-wins"
         assert fc.build_body_command(_base_cfg(executor="codex")) == ["body-wins"]
     finally:
         for k, old in olds.items():
@@ -273,7 +275,7 @@ def test_config_and_state_owner_only() -> None:
 
 def test_artifact_and_handoff_owner_only() -> None:
     run_id = "safe-art-1"
-    base = Path(os.environ["FABLE_RUNS_DIR"])
+    base = Path(os.environ["FRONTIER_RUNS_DIR"])
     art = fc.write_artifact(base, run_id, "body-0", "do thing", "hello artifact")
     path = Path(art["path"])
     assert path.is_file()
@@ -364,7 +366,7 @@ def test_prompt_file_owner_only_and_cleanup() -> None:
 # Stdin transport for Codex preserved
 # --------------------------------------------------------------------------- #
 def test_codex_stdin_transport_preserved() -> None:
-    old = _env("FABLE_CODEX_CMD", None)
+    old = _env("FRONTIER_CODEX_CMD", None)
     try:
         cmd = fc.build_codex_command(_base_cfg())
         final, stdin, cleanup = fc._prepare_prompt_command(cmd, "large spec body")
@@ -372,7 +374,7 @@ def test_codex_stdin_transport_preserved() -> None:
         assert stdin == "large spec body"
         assert final[-1] == "-"
     finally:
-        _restore("FABLE_CODEX_CMD", old)
+        _restore("FRONTIER_CODEX_CMD", old)
 
     # Echo via override that reads stdin conceptually: python reads sys.stdin
     rc, out, err = fc.run_engine(
@@ -432,27 +434,27 @@ def test_run_engine_success_and_missing_binary() -> None:
 # --------------------------------------------------------------------------- #
 def test_dispatch_refuses_unknown_executor_and_dry_run_defaults() -> None:
     env = os.environ.copy()
-    env["FABLE_CONFIG_DIR"] = str(Path(_TMP) / "dispatch-cfg")
-    env["FABLE_STATE_DIR"] = str(Path(_TMP) / "dispatch-state")
-    env["FABLE_RUNS_DIR"] = str(Path(_TMP) / "dispatch-runs")
-    env["FABLE_SESSION_ID"] = "safe-dispatch"
-    for k in ("FABLE_CODEX_CMD", "FABLE_BODY_CMD", "FABLE_EXECUTOR_CMD",
-              "FABLE_CODEX_YOLO", "FABLE_GROK_YOLO", "FABLE_GROK_PERMISSION_MODE"):
+    env["FRONTIER_CONFIG_DIR"] = str(Path(_TMP) / "dispatch-cfg")
+    env["FRONTIER_STATE_DIR"] = str(Path(_TMP) / "dispatch-state")
+    env["FRONTIER_RUNS_DIR"] = str(Path(_TMP) / "dispatch-runs")
+    env["FRONTIER_SESSION_ID"] = "safe-dispatch"
+    for k in ("FRONTIER_CODEX_CMD", "FRONTIER_BODY_CMD", "FRONTIER_EXECUTOR_CMD",
+              "FRONTIER_CODEX_YOLO", "FRONTIER_GROK_YOLO", "FRONTIER_GROK_PERMISSION_MODE"):
         env.pop(k, None)
 
-    # Inject unknown executor via session state by writing then dry-run — easier: env FABLE_EXECUTOR
-    env["FABLE_EXECUTOR"] = "notreal"
+    # Inject unknown executor via session state by writing then dry-run — easier: env FRONTIER_EXECUTOR
+    env["FRONTIER_EXECUTOR"] = "notreal"
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "fable_dispatch.py"), "--dry-run", "task one"],
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "--dry-run", "task one"],
         capture_output=True, text=True, timeout=30, env=env, cwd=str(ROOT),
     )
     assert proc.returncode == 2, (proc.returncode, proc.stdout, proc.stderr)
     assert "unknown executor" in (proc.stderr or "").lower() or "refused" in (proc.stderr or "").lower()
 
-    env.pop("FABLE_EXECUTOR", None)
+    env.pop("FRONTIER_EXECUTOR", None)
     # Codex dry-run: no --yolo
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "fable_dispatch.py"),
+        [sys.executable, str(ROOT / "frontier_dispatch.py"),
          "--dry-run", "--executor", "codex", "safe dry task"],
         capture_output=True, text=True, timeout=30, env=env, cwd=str(ROOT),
     )
@@ -463,7 +465,7 @@ def test_dispatch_refuses_unknown_executor_and_dry_run_defaults() -> None:
 
     # Grok dry-run: no bypassPermissions
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "fable_dispatch.py"),
+        [sys.executable, str(ROOT / "frontier_dispatch.py"),
          "--dry-run", "--executor", "grok", "safe grok task"],
         capture_output=True, text=True, timeout=30, env=env, cwd=str(ROOT),
     )
@@ -478,16 +480,16 @@ def test_dispatch_refuses_unknown_executor_and_dry_run_defaults() -> None:
 def test_dispatch_live_writes_owner_only_artifacts() -> None:
     env = os.environ.copy()
     runs = Path(_TMP) / "dispatch-live-runs"
-    env["FABLE_CONFIG_DIR"] = str(Path(_TMP) / "dispatch-live-cfg")
-    env["FABLE_STATE_DIR"] = str(Path(_TMP) / "dispatch-live-state")
-    env["FABLE_RUNS_DIR"] = str(runs)
-    env["FABLE_SESSION_ID"] = "safe-dispatch-live"
-    env["FABLE_BODY_CMD"] = f"{sys.executable} -c \"import sys; print(sys.stdin.read().strip())\""
-    for k in ("FABLE_CODEX_CMD", "FABLE_EXECUTOR_CMD", "FABLE_CODEX_YOLO"):
+    env["FRONTIER_CONFIG_DIR"] = str(Path(_TMP) / "dispatch-live-cfg")
+    env["FRONTIER_STATE_DIR"] = str(Path(_TMP) / "dispatch-live-state")
+    env["FRONTIER_RUNS_DIR"] = str(runs)
+    env["FRONTIER_SESSION_ID"] = "safe-dispatch-live"
+    env["FRONTIER_BODY_CMD"] = f"{sys.executable} -c \"import sys; print(sys.stdin.read().strip())\""
+    for k in ("FRONTIER_CODEX_CMD", "FRONTIER_EXECUTOR_CMD", "FRONTIER_CODEX_YOLO"):
         env.pop(k, None)
 
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "fable_dispatch.py"), "artifact body text"],
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "artifact body text"],
         capture_output=True, text=True, timeout=30, env=env, cwd=str(ROOT),
     )
     assert proc.returncode == 0, (proc.stdout, proc.stderr)

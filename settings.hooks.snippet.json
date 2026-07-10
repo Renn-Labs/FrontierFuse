@@ -1,18 +1,19 @@
 {
-  "//": "FableFuse workflow guardrail for Claude Code. `python3 fable_dispatch.py install-hooks` merges these into ~/.claude/settings.json automatically (replacing <REPO> with the repo's absolute path) and makes a .json.bak backup. Shown here for reference / manual install. Inert until `fable-dispatch arm --gate \"…\"` freezes verifier argv/cwd; snapshot-bound Stop verification is not a sandbox. Kill-switch FABLE_GUARDS_OFF=1.",
+  "//": "FrontierFuse workflow guardrail for Claude Code. `python3 frontier_dispatch.py install-hooks` merges these into ~/.claude/settings.json automatically (replacing <REPO> with the repo's absolute path) and makes a .json.bak backup. Shown here for reference / manual install. Inert until `frontier-dispatch arm --gate \"…\"` freezes verifier argv/cwd; snapshot-bound Stop verification is not a sandbox. Kill-switch FRONTIER_GUARDS_OFF=1.",
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
         "hooks": [
-          { "type": "command", "command": "python3 <REPO>/hooks/fable_gate.py" }
+          { "type": "command", "command": "python3 <REPO>/hooks/frontier_gate.py" }
         ]
       }
     ],
     "Stop": [
       {
+        "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "python3 <REPO>/hooks/fable_verify_gate.py" }
+          { "type": "command", "command": "python3 <REPO>/hooks/frontier_verify_gate.py" }
         ]
       }
     ]

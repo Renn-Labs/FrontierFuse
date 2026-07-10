@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""fable_common.py — shared foundation for FableFuse (the contract every module imports).
+"""frontier_common.py — shared foundation for FrontierFuse (the contract every module imports).
 
-FableFuse pairs two model roles:
+FrontierFuse pairs two model roles:
   - BODY / EXECUTOR = Codex   (`codex exec -c model_reasoning_effort=high`, no pinned model —
                               Codex's own current account-aware default is used unless
-                              FABLE_CODEX_MODEL / --model explicitly pins one)
+                              FRONTIER_CODEX_MODEL / --model explicitly pins one)
                      or Sonnet / Opus through the Claude CLI, or Grok Build CLI when selected.
   - BRAIN / ADVISOR = Fable 5 (`claude -p --model claude-fable-5`)
 
 Two control flows are built on this foundation:
   - advisor  (default): the selected executor/lead is the main loop and consults Fable ON-DEMAND
-                        via `ask_fable` (fable_advisor.py / fable_advisor_mcp.py).
+                        via `ask_frontier` (frontier_advisor.py / frontier_advisor_mcp.py).
   - orchestrator      : Fable is the in-session main loop and dispatches selected bodies
-                        (fable_dispatch.py) behind a workflow guardrail + deterministic verdict.
+                        (frontier_dispatch.py) behind a workflow guardrail + deterministic verdict.
 
 This module owns everything shared so the two loops never drift:
   - config toggles + precedence (body/advisor models, effort, fast mode)
@@ -38,14 +38,15 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 # Paths
 # --------------------------------------------------------------------------- #
-CONFIG_HOME = Path(os.environ.get("FABLE_CONFIG_DIR", Path.home() / ".config" / "fable-fuse"))
-GLOBAL_CONFIG = Path(os.environ.get("FABLE_CONFIG", CONFIG_HOME / "config.json"))
-STATE_DIR = Path(os.environ.get("FABLE_STATE_DIR", CONFIG_HOME / "state"))
+CONFIG_HOME = Path(os.environ.get("FRONTIER_CONFIG_DIR", Path.home() / ".config" / "frontier-fuse"))
+GLOBAL_CONFIG = Path(os.environ.get("FRONTIER_CONFIG", CONFIG_HOME / "config.json"))
+STATE_DIR = Path(os.environ.get("FRONTIER_STATE_DIR", CONFIG_HOME / "state"))
 
 # Owner-only modes for sensitive local artifacts (config, state, prompts, runs).
 OWNER_ONLY_FILE = 0o600
 OWNER_ONLY_DIR = 0o700
-KNOWN_EXECUTORS = frozenset({"codex", "sonnet", "opus", "grok"})
+KNOWN_EXECUTORS = frozenset({"codex", "claude", "grok", "gemini"})
+KNOWN_PROFILES = frozenset({"advisor", "orchestrator"})
 
 
 # --------------------------------------------------------------------------- #
@@ -58,18 +59,22 @@ KNOWN_EXECUTORS = frozenset({"codex", "sonnet", "opus", "grok"})
 #   fast          bool speed preset      (default False) -> body uses fast_effort/fast_model
 #   fast_effort   effort when fast=on    (default low)
 #   fast_model    optional lighter body model when fast=on (default "" -> keep codex_model)
-#   fable_model   advisor (brain) model  (default claude-fable-5)
-#   executor      body/driver engine     codex|sonnet|opus|grok|custom (default codex)
-#   sonnet_model  model when executor=sonnet (default claude-sonnet-5)
-#   opus_model    model when executor=opus   (default claude-opus-4-8)
+#   profile       control flow            advisor|orchestrator (default advisor)
+#   frontier_provider managed advisor     codex|claude|grok|gemini (default claude)
+#   frontier_model frontier model         (default claude-fable-5)
+#   executor      body provider           codex|claude|grok|gemini (default codex)
+#   claude_model  model when executor=claude (default claude-sonnet-5)
 #   grok_model    model when executor=grok   (default grok-4.5)
+#   gemini_model  model when executor=gemini (default gemini-3.5-flash)
+#   update_mode   release reminders          passive|manual|off (default passive)
 # Autonomous permission flags are opt-in (default OFF as of 0.2.6):
-#   FABLE_CODEX_YOLO=1 adds Codex --yolo
-#   FABLE_GROK_YOLO=1 adds Grok --permission-mode bypassPermissions
-#   FABLE_GROK_PERMISSION_MODE=<mode> sets an explicit Grok permission mode
+#   FRONTIER_CODEX_YOLO=1 adds Codex --yolo
+#   FRONTIER_GROK_YOLO=1 adds Grok --permission-mode bypassPermissions
+#   FRONTIER_GROK_PERMISSION_MODE=<mode> sets an explicit Grok permission mode
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
-               "fable_model", "executor", "sonnet_model", "opus_model", "grok_model",
-               "grok_effort")
+               "profile", "frontier_provider", "frontier_model", "executor", "claude_model",
+               "grok_model", "gemini_model", "grok_effort", "update_mode")
+UPDATE_MODES = frozenset({"passive", "manual", "off"})
 
 _TRUE = {"1", "true", "yes", "on", "y"}
 _FALSE = {"0", "false", "no", "off", "n", ""}
@@ -94,42 +99,48 @@ def defaults() -> dict:
         # "Staying current" in README) — hardcoding a version number is how this project shipped
         # an invented, nonexistent "gpt-5.5-codex" default in the first place. Empty means
         # build_codex_command() omits --model so `codex exec` uses its own current account-aware
-        # default. Set FABLE_CODEX_MODEL / --model to pin a specific release.
+        # default. Set FRONTIER_CODEX_MODEL / --model to pin a specific release.
         "codex_model": "",
         "codex_effort": "high",
         "grok_effort": "high",
         "fast": False,
         "fast_effort": "low",
         "fast_model": "",
-        "fable_model": "claude-fable-5",
+        "profile": "advisor",
+        "frontier_provider": "claude",
+        "frontier_model": "claude-fable-5",
         "executor": "codex",
-        "sonnet_model": "claude-sonnet-5",
-        "opus_model": "claude-opus-4-8",
+        "claude_model": "claude-sonnet-5",
         "grok_model": "grok-4.5",
+        "gemini_model": "gemini-3.5-flash",
+        "update_mode": "passive",
     }
 
 
 def _env_config() -> dict:
-    """Config sourced from environment (FABLE_* wins over nothing but loses to file/session/flag)."""
+    """Config sourced from environment (FRONTIER_* wins over nothing but loses to file/session/flag)."""
     out: dict = {}
     m = {
-        "codex_model": "FABLE_CODEX_MODEL",
-        "codex_effort": "FABLE_CODEX_EFFORT",
-        "grok_effort": "FABLE_GROK_EFFORT",
-        "fast_effort": "FABLE_CODEX_FAST_EFFORT",
-        "fast_model": "FABLE_CODEX_FAST_MODEL",
-        "fable_model": "FABLE_MODEL",
-        "executor": "FABLE_EXECUTOR",
-        "sonnet_model": "FABLE_SONNET_MODEL",
-        "opus_model": "FABLE_OPUS_MODEL",
-        "grok_model": "FABLE_GROK_MODEL",
+        "codex_model": "FRONTIER_CODEX_MODEL",
+        "codex_effort": "FRONTIER_CODEX_EFFORT",
+        "grok_effort": "FRONTIER_GROK_EFFORT",
+        "fast_effort": "FRONTIER_CODEX_FAST_EFFORT",
+        "fast_model": "FRONTIER_CODEX_FAST_MODEL",
+        "profile": "FRONTIER_PROFILE",
+        "frontier_provider": "FRONTIER_PROVIDER",
+        "frontier_model": "FRONTIER_MODEL",
+        "executor": "FRONTIER_EXECUTOR",
+        "claude_model": "FRONTIER_CLAUDE_MODEL",
+        "grok_model": "FRONTIER_GROK_MODEL",
+        "gemini_model": "FRONTIER_GEMINI_MODEL",
+        "update_mode": "FRONTIER_UPDATE_MODE",
     }
     for key, env in m.items():
         v = os.environ.get(env)
         if v not in (None, ""):
             out[key] = v
-    if os.environ.get("FABLE_CODEX_FAST") is not None:
-        out["fast"] = _as_bool(os.environ.get("FABLE_CODEX_FAST"))
+    if os.environ.get("FRONTIER_CODEX_FAST") is not None:
+        out["fast"] = _as_bool(os.environ.get("FRONTIER_CODEX_FAST"))
     return out
 
 
@@ -223,6 +234,19 @@ def resolve_config(overrides: dict | None = None, session_id: str | None = None)
     cfg["grok_effort"] = str(cfg.get("grok_effort") or "high").lower()
     cfg["fast_effort"] = str(cfg.get("fast_effort") or "low").lower()
     cfg["executor"] = str(cfg.get("executor") or "codex").lower()
+    cfg["profile"] = str(cfg.get("profile") or "advisor").lower()
+    cfg["frontier_provider"] = str(cfg.get("frontier_provider") or "claude").lower()
+    if cfg["executor"] not in KNOWN_EXECUTORS:
+        raise ValueError(f"unknown executor {cfg['executor']!r}; expected one of {sorted(KNOWN_EXECUTORS)}")
+    if cfg["frontier_provider"] not in KNOWN_EXECUTORS:
+        raise ValueError(
+            f"unknown frontier provider {cfg['frontier_provider']!r}; "
+            f"expected one of {sorted(KNOWN_EXECUTORS)}"
+        )
+    if cfg["profile"] not in KNOWN_PROFILES:
+        raise ValueError(f"unknown profile {cfg['profile']!r}; expected one of {sorted(KNOWN_PROFILES)}")
+    update_mode = str(cfg.get("update_mode") or "passive").lower()
+    cfg["update_mode"] = update_mode if update_mode in UPDATE_MODES else "passive"
     return cfg
 
 
@@ -263,7 +287,7 @@ def clear_state(session_id: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Verdict schema (shared by fable_verify.py and the Stop hook)
+# Verdict schema (shared by frontier_verify.py and the Stop hook)
 # --------------------------------------------------------------------------- #
 def make_verdict(gate: str, exit_code: int, diff_sha: str, paths: list[str], ts: float,
                  after_dispatch_ts: float) -> dict:
@@ -291,7 +315,7 @@ def verdict_is_fresh_green(verdict: dict | None, last_dispatch_ts: float) -> boo
 # Kill switch
 # --------------------------------------------------------------------------- #
 def guards_off() -> bool:
-    return _as_bool(os.environ.get("FABLE_GUARDS_OFF")) or _as_bool(os.environ.get("CLAUDE_GUARDS_OFF"))
+    return _as_bool(os.environ.get("FRONTIER_GUARDS_OFF")) or _as_bool(os.environ.get("CLAUDE_GUARDS_OFF"))
 
 
 # --------------------------------------------------------------------------- #
@@ -302,62 +326,65 @@ def build_codex_command(cfg: dict) -> list[str]:
 
     Default (0.2.6+): `codex exec -c model_reasoning_effort=<e> -` — inherits Codex's own
     permission defaults. Prompt is fed on stdin (`-`; run_engine handles stdin).
-    Autonomously elevated permissions require explicit opt-in: FABLE_CODEX_YOLO=1 adds --yolo.
+    Autonomously elevated permissions require explicit opt-in: FRONTIER_CODEX_YOLO=1 adds --yolo.
     fast=on swaps effort->fast_effort and (if set) model->fast_model.
     No --model flag is added unless codex_model/fast_model is explicitly set — Codex's own
     account-aware default keeps working as OpenAI ships new releases.
-    Whole-command override: FABLE_CODEX_CMD (trusted compatibility input, e.g. `echo` in tests).
+    Whole-command override: FRONTIER_CODEX_CMD (trusted compatibility input, e.g. `echo` in tests).
     """
-    override = os.environ.get("FABLE_CODEX_CMD")
+    override = os.environ.get("FRONTIER_CODEX_CMD")
     if override:
         return shlex.split(override)
     effort = cfg["fast_effort"] if cfg.get("fast") else cfg["codex_effort"]
     model = (cfg.get("fast_model") or cfg["codex_model"]) if cfg.get("fast") else cfg["codex_model"]
     # Opt-in only: default False so --yolo is never added unless explicitly enabled.
-    yolo = ["--yolo"] if _as_bool(os.environ.get("FABLE_CODEX_YOLO"), False) else []
+    yolo = ["--yolo"] if _as_bool(os.environ.get("FRONTIER_CODEX_YOLO"), False) else []
     model_flag = ["--model", model] if model else []
     return ["codex", "exec", *yolo, *model_flag, "-c", f"model_reasoning_effort={effort}", "-"]
 
 
-def build_fable_command(cfg: dict) -> list[str]:
-    """Build the Fable ADVISOR/BRAIN command. Override with FABLE_ADVISOR_CMD."""
-    override = os.environ.get("FABLE_ADVISOR_CMD")
+def build_frontier_command(cfg: dict) -> list[str]:
+    """Build the managed frontier/advisor command. Override with FRONTIER_ADVISOR_CMD."""
+    override = os.environ.get("FRONTIER_ADVISOR_CMD")
     if override:
         return shlex.split(override)
-    return ["claude", "-p", "--model", cfg.get("fable_model") or "claude-fable-5"]
+    provider = str(cfg.get("frontier_provider") or "claude").lower()
+    model = str(cfg.get("frontier_model") or "")
+    if provider == "claude":
+        return ["claude", "-p", "--model", model or "claude-fable-5"]
+    if provider == "codex":
+        model_flag = ["--model", model] if model else []
+        return ["codex", "exec", *model_flag, "-"]
+    if provider == "grok":
+        return ["grok", "--model", model or "grok-4.5", "--prompt-file", "{prompt_file}"]
+    if provider == "gemini":
+        return ["gemini", "--model", model or "gemini-3.5-flash", "--prompt", ""]
+    raise ValueError(f"unknown frontier provider {provider!r}")
 
 
-def build_sonnet_command(cfg: dict) -> list[str]:
-    """Build the Sonnet lead/body command. Override with FABLE_SONNET_CMD."""
-    override = os.environ.get("FABLE_SONNET_CMD")
+def build_claude_command(cfg: dict) -> list[str]:
+    """Build a Claude executor command. Override with FRONTIER_CLAUDE_CMD."""
+    override = os.environ.get("FRONTIER_CLAUDE_CMD")
     if override:
         return shlex.split(override)
-    return ["claude", "-p", "--model", cfg.get("sonnet_model") or "claude-sonnet-5"]
-
-
-def build_opus_command(cfg: dict) -> list[str]:
-    """Build the Opus lead/body command for reverse-advisor mode. Override with FABLE_OPUS_CMD."""
-    override = os.environ.get("FABLE_OPUS_CMD")
-    if override:
-        return shlex.split(override)
-    return ["claude", "-p", "--model", cfg.get("opus_model") or "claude-opus-4-8"]
+    return ["claude", "-p", "--model", cfg.get("claude_model") or "claude-sonnet-5"]
 
 
 def build_grok_command(cfg: dict) -> list[str]:
-    """Build the Grok Build lead/body command. Override with FABLE_GROK_CMD.
+    """Build the Grok Build lead/body command. Override with FRONTIER_GROK_CMD.
 
     Default (0.2.6+): no --permission-mode (inherits Grok's provider defaults).
-    Opt-in autonomy: FABLE_GROK_YOLO=1 adds --permission-mode bypassPermissions.
-    Explicit mode: FABLE_GROK_PERMISSION_MODE=<mode> always wins when set.
+    Opt-in autonomy: FRONTIER_GROK_YOLO=1 adds --permission-mode bypassPermissions.
+    Explicit mode: FRONTIER_GROK_PERMISSION_MODE=<mode> always wins when set.
     Prompt transport: managed owner-only temp file via {prompt_file}.
     """
-    override = os.environ.get("FABLE_GROK_CMD")
+    override = os.environ.get("FRONTIER_GROK_CMD")
     if override:
         return shlex.split(override)
     effort = cfg["fast_effort"] if cfg.get("fast") else cfg.get("grok_effort", "high")
-    permission = os.environ.get("FABLE_GROK_PERMISSION_MODE")
+    permission = os.environ.get("FRONTIER_GROK_PERMISSION_MODE")
     # Opt-in only: default False so bypassPermissions is never added unless enabled.
-    if permission is None and _as_bool(os.environ.get("FABLE_GROK_YOLO"), False):
+    if permission is None and _as_bool(os.environ.get("FRONTIER_GROK_YOLO"), False):
         permission = "bypassPermissions"
     permission_flags = ["--permission-mode", permission] if permission else []
     return [
@@ -369,28 +396,40 @@ def build_grok_command(cfg: dict) -> list[str]:
     ]
 
 
+def build_gemini_command(cfg: dict) -> list[str]:
+    """Build a Gemini CLI executor command. Override with FRONTIER_GEMINI_CMD."""
+    override = os.environ.get("FRONTIER_GEMINI_CMD")
+    if override:
+        return shlex.split(override)
+    return [
+        "gemini", "--model", cfg.get("gemini_model") or "gemini-3.5-flash",
+        "--prompt", "", "--output-format", "text",
+    ]
+
+
 def build_body_command(cfg: dict) -> list[str]:
     """Build the BODY/EXECUTOR command for the selected engine.
 
-    Universal override: FABLE_BODY_CMD / FABLE_EXECUTOR_CMD (trusted whole-command inputs).
-    Per-engine overrides: FABLE_CODEX_CMD / FABLE_SONNET_CMD / FABLE_OPUS_CMD / FABLE_GROK_CMD.
+    Universal override: FRONTIER_BODY_CMD / FRONTIER_EXECUTOR_CMD (trusted whole-command inputs).
+    Per-provider overrides: FRONTIER_CODEX_CMD / FRONTIER_CLAUDE_CMD / FRONTIER_GROK_CMD /
+    FRONTIER_GEMINI_CMD.
     Unknown executor values fail closed (ValueError) instead of falling through to Codex.
     """
-    override = os.environ.get("FABLE_BODY_CMD") or os.environ.get("FABLE_EXECUTOR_CMD")
+    override = os.environ.get("FRONTIER_BODY_CMD") or os.environ.get("FRONTIER_EXECUTOR_CMD")
     if override:
         return shlex.split(override)
     executor = (cfg.get("executor") or "codex").lower().strip()
     if executor == "codex":
         return build_codex_command(cfg)
-    if executor == "sonnet":
-        return build_sonnet_command(cfg)
-    if executor == "opus":
-        return build_opus_command(cfg)
+    if executor == "claude":
+        return build_claude_command(cfg)
     if executor == "grok":
         return build_grok_command(cfg)
+    if executor == "gemini":
+        return build_gemini_command(cfg)
     raise ValueError(
         f"unknown executor {executor!r}; expected one of {sorted(KNOWN_EXECUTORS)} "
-        f"(or set FABLE_BODY_CMD / FABLE_EXECUTOR_CMD as a whole-command override)"
+        f"(or set FRONTIER_BODY_CMD / FRONTIER_EXECUTOR_CMD as a whole-command override)"
     )
 
 
@@ -404,7 +443,7 @@ def _apply_prompt(cmd: list[str], prompt: str) -> tuple[list[str], str | None]:
 def _prepare_prompt_command(cmd: list[str], prompt: str) -> tuple[list[str], str | None, list[str]]:
     """Prepare a command for execution, including managed owner-only temp files for {prompt_file}."""
     if any("{prompt_file}" in a for a in cmd):
-        fd, tmp_name = tempfile.mkstemp(prefix="fable-prompt-", suffix=".txt")
+        fd, tmp_name = tempfile.mkstemp(prefix="frontier-prompt-", suffix=".txt")
         try:
             try:
                 os.fchmod(fd, OWNER_ONLY_FILE)
@@ -505,8 +544,8 @@ def run_engine(cmd: list[str], prompt: str, timeout: int = 300) -> tuple[int, st
 # --------------------------------------------------------------------------- #
 # Artifacts + bounded handoff cards (adapted from FleetFuse fleet_mcp.py, MIT — see NOTICE)
 # --------------------------------------------------------------------------- #
-MAX_RETURN_CHARS = int(os.environ.get("FABLE_MAX_RETURN_CHARS", "1800"))
-RUNS_DIR = Path(os.environ.get("FABLE_RUNS_DIR", Path.cwd() / "runs"))
+MAX_RETURN_CHARS = int(os.environ.get("FRONTIER_MAX_RETURN_CHARS", "1800"))
+RUNS_DIR = Path(os.environ.get("FRONTIER_RUNS_DIR", Path.cwd() / "runs"))
 
 _MARKERS = (
     "finding", "risk", "bug", "error", "fail", "pass", "test", "verify", "evidence",
@@ -550,13 +589,13 @@ def write_artifact(base_dir: Path, run_id: str, label: str, task: str, text: str
     raw = text or ""
     digest = hashlib.sha256(raw.encode()).hexdigest() if raw else ""
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in (label or "body"))[:60] or "body"
-    run_dir = Path(base_dir) / f"fable-{run_id}"
+    run_dir = Path(base_dir) / f"frontier-{run_id}"
     path = run_dir / f"{safe}.md"
     if raw:
         mkdir_owner_only(run_dir)
         write_text_owner_only(
             path,
-            "# FableFuse body artifact\n\n"
+            "# FrontierFuse body artifact\n\n"
             f"- run_id: `{run_id}`\n- label: `{label}`\n- task: {task[:240]}\n"
             f"- sha256: `{digest}`\n- bytes: {len(raw.encode())}\n\n## Raw output\n\n{raw}\n",
         )
@@ -567,7 +606,7 @@ def write_handoff_card(base_dir: Path, run_id: str, card: dict) -> Path:
     """Persist a bounded handoff card as owner-only JSON under the run directory."""
     label = str(card.get("label") or "body")
     safe = "".join(c if (c.isalnum() or c in "-_.") else "_" for c in label)[:60] or "body"
-    run_dir = mkdir_owner_only(Path(base_dir) / f"fable-{run_id}")
+    run_dir = mkdir_owner_only(Path(base_dir) / f"frontier-{run_id}")
     path = run_dir / f"{safe}.handoff.json"
     write_json_owner_only(path, card)
     return path
@@ -592,10 +631,10 @@ def handoff_card(label: str, task: str, text: str, artifact: dict,
 if __name__ == "__main__":
     import sys
     cfg = resolve_config()
-    print("FableFuse common — effective config:")
+    print("FrontierFuse common — effective config:")
     print(json.dumps(cfg, indent=2, sort_keys=True))
     print("executor       :", cfg["executor"])
     print("body cmd       :", " ".join(build_body_command(cfg)))
-    print("fable brain cmd:", " ".join(build_fable_command(cfg)))
+    print("frontier brain cmd:", " ".join(build_frontier_command(cfg)))
     print("guards_off     :", guards_off())
     sys.exit(0)

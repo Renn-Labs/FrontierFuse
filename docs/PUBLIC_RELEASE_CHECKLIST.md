@@ -34,14 +34,15 @@ any public exposure.
 
 ## Release Hygiene
 
-- Bump `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` together.
+- Bump `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
+  `frontier_advisor_mcp.py`, and `frontier_update.py` together.
 - Move changelog notes out of `Unreleased` into a dated version section.
 - Update README install/upgrade instructions for user-visible behavior or configuration changes.
 - Verify any current-market model IDs or availability claims against official provider docs. Do not
-  infer unreleased family names; current Opus executor defaults must remain `claude-opus-4-8` unless
-  official Anthropic docs say otherwise. Current Grok executor defaults must remain `grok-4.5`
-  unless official xAI docs say otherwise. GPT-5.6 preview pins are limited to exact verified IDs
-  `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` for entitled organizations.
+  infer unreleased family names. Keep provider and model separate: Codex, Claude, Grok, and Gemini
+  are provider values; Fable, Sonnet, Opus, GPT-5.6, Grok releases, and Gemini releases are model
+  values. The source-backed catalog lives in `frontier_models.py`; local/account-specific Grok IDs
+  must come from `grok models` or official documentation.
 - Validate plugin metadata with `claude plugin validate .`.
 - Run keyless/offline tests only unless a maintainer explicitly approves live-provider validation.
 
