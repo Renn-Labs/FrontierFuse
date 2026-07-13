@@ -49,7 +49,7 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _init_repo() -> Path:
-    repo = Path(tempfile.mkdtemp(prefix="frontier-snap-repo-"))
+    repo = Path(tempfile.mkdtemp(prefix="frontier-snap-repo-")).resolve()
     _git(repo, "init")
     _git(repo, "config", "user.email", "snap@test.local")
     _git(repo, "config", "user.name", "Snap Test")
@@ -59,6 +59,22 @@ def _init_repo() -> Path:
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "seed")
     return repo
+
+
+def test_repo_fixture_canonicalizes_symlinked_tempdir() -> None:
+    base = Path(_TMP) / "symlinked-tempdir"
+    real_tempdir = base / "real"
+    alias_tempdir = base / "alias"
+    real_tempdir.mkdir(parents=True)
+    alias_tempdir.symlink_to(real_tempdir, target_is_directory=True)
+    original_tempdir = tempfile.tempdir
+    try:
+        tempfile.tempdir = str(alias_tempdir)
+        repo = _init_repo()
+        assert repo == repo.resolve()
+        assert repo.parent == real_tempdir.resolve()
+    finally:
+        tempfile.tempdir = original_tempdir
 
 
 def _run_stop(session_id: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -1479,6 +1495,7 @@ def test_cli_legacy_shell_flag() -> None:
 
 def main() -> int:
     tests = [
+        test_repo_fixture_canonicalizes_symlinked_tempdir,
         test_clean_green_argv,
         test_green_verdict_is_bound_to_exact_session_id,
         test_red_on_nonzero_exit,

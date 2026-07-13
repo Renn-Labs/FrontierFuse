@@ -8,6 +8,12 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.4] - 2026-07-12
+
+### Fixed
+- Verification contract fixtures canonicalize temporary Git worktree paths at creation, covering
+  macOS `/var` to `/private/var` aliases and synthetic symlinked temp roots in the offline matrix.
+
 ## [0.3.3] - 2026-07-12
 
 ### Fixed
