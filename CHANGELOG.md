@@ -8,6 +8,12 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.3] - 2026-07-12
+
+### Fixed
+- Verification contracts use PATH-resolved `true` and `false` executables instead of Linux-specific
+  `/bin` paths, keeping the Python 3.10/3.12 matrix portable across Ubuntu and macOS runners.
+
 ## [0.3.2] - 2026-07-12
 
 ### Added
@@ -129,7 +135,6 @@ No unreleased changes.
   when armed or when reopening a blocked Stop attempt; corrupt persisted state still fails closed.
 - The pre-push doctor smoke uses isolated temporary configuration and state, so a maintainer's local
   sessions cannot make an otherwise clean public-release gate fail or pass.
-
 ## [0.3.1] - 2026-07-09
 
 ### Changed

@@ -87,7 +87,7 @@ def _approved_gate(gate: str, repo: Path) -> dict:
 def _arm(
     session_id: str,
     repo: Path,
-    gate: str = "/bin/true",
+    gate: str = "true",
     last_dispatch_ts: float | None = None,
 ) -> None:
     fc.write_state(
@@ -101,14 +101,14 @@ def _arm(
 def _arm_with_verdict(session_id: str, verdict: dict, last_dispatch_ts: float = 1.0) -> None:
     snapshot = verdict.get("verified_snapshot") or verdict.get("final_snapshot") or {}
     root = Path(str(snapshot.get("workspace_root") or ROOT))
-    gate = str(verdict.get("gate") or "/bin/false")
+    gate = str(verdict.get("gate") or "false")
     gate_argv = verdict.get("gate_argv")
     if not isinstance(gate_argv, list) or not gate_argv:
         try:
             gate_argv = fv.parse_gate_argv(gate)
         except ValueError:
-            gate = "/bin/false"
-            gate_argv = ["/bin/false"]
+            gate = "false"
+            gate_argv = ["false"]
     approved = {
         "gate": gate,
         "argv": list(gate_argv),
@@ -136,12 +136,12 @@ def test_clean_green_argv() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN", v
         assert v["exit_code"] == 0
         assert v["schema_version"] == fv.VERDICT_SCHEMA_VERSION
         assert v["gate_mode"] == "argv"
-        assert v["gate_argv"] == ["/bin/true"]
+        assert v["gate_argv"] == ["true"]
         assert v["unsafe"] is False
         assert v["snapshot_stable"] is True
         assert isinstance(v["pre_gate_snapshot"], dict)
@@ -199,8 +199,8 @@ def test_green_verdict_is_bound_to_exact_session_id() -> None:
     owner_sid = "session/owner"
     other_sid = "session?owner"
     try:
-        verdict = fv.run_gate("/bin/true", session_id=owner_sid, cwd=str(repo))
-        approved = _approved_gate("/bin/true", repo)
+        verdict = fv.run_gate("true", session_id=owner_sid, cwd=str(repo))
+        approved = _approved_gate("true", repo)
         assert fv.verdict_is_snapshot_fresh_green(
             verdict,
             0.0,
@@ -265,7 +265,7 @@ def test_mutation_unstaged_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         (repo / "README.md").write_text("dirty unstaged\n")
         # Re-load state (run_gate already wrote it) and run Stop
@@ -289,7 +289,7 @@ def test_mutation_staged_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         (repo / "extra.txt").write_text("staged\n")
         _git(repo, "add", "extra.txt")
@@ -305,7 +305,7 @@ def test_mutation_committed_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         old_head = v["verified_snapshot"]["head"]
         (repo / "more.txt").write_text("committed\n")
@@ -331,7 +331,7 @@ def test_mutation_untracked_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         (repo / "ghost.txt").write_text("untracked\n")
         proc = _run_stop(sid, cwd=repo)
@@ -346,7 +346,7 @@ def test_config_change_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         # Session config change alters effective config_sha.
         fc.write_state(sid, config={"codex_effort": "low"})
@@ -396,13 +396,13 @@ def test_gate_identity_change_invalidates() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
-        # Tamper: claim a different gate while keeping verified_snapshot from /bin/true.
+        # Tamper: claim a different gate while keeping verified_snapshot from true.
         st = fc.read_state(sid)
         verdict = dict(st["verdict"])
-        verdict["gate"] = "/bin/false"
-        verdict["gate_argv"] = ["/bin/false"]
+        verdict["gate"] = "false"
+        verdict["gate_argv"] = ["false"]
         fc.write_state(sid, verdict=verdict)
         proc = _run_stop(sid, cwd=repo)
         assert proc.returncode == 2, "gate identity change must reject GREEN"
@@ -519,7 +519,7 @@ def test_owner_only_verdict_mode() -> None:
     repo.chmod(0o755)
     original_repo_mode = stat.S_IMODE(repo.stat().st_mode)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         mode = stat.S_IMODE((repo / "verdict.json").stat().st_mode)
         assert mode & 0o077 == 0, f"group/other bits must be clear, got {oct(mode)}"
@@ -554,7 +554,7 @@ def test_dispatch_timestamp_compat() -> None:
     sid = "snap-ts-compat"
     fc.clear_state(sid)
     try:
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         # A wall-clock jump alone cannot make a same-generation verdict stale.
         future = float(v["ts"]) + 100.0
@@ -563,7 +563,7 @@ def test_dispatch_timestamp_compat() -> None:
             armed=True,
             last_dispatch_ts=future,
             verdict=v,
-            approved_gate=_approved_gate("/bin/true", repo),
+            approved_gate=_approved_gate("true", repo),
         )
         assert (
             fv.verdict_is_snapshot_fresh_green(
@@ -594,7 +594,7 @@ def test_oversized_untracked_content_change_invalidates() -> None:
         fv.MAX_UNTRACKED_BYTES = 64
         big = repo / "big.bin"
         big.write_bytes(b"A" * 128)
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         # Same length, different bytes — size-only fingerprints would miss this.
         big.write_bytes(b"B" * 128)
@@ -620,7 +620,7 @@ def test_overflow_untracked_meta_change_invalidates() -> None:
         fv.MAX_UNTRACKED_META = 50
         for i in range(5):
             (repo / f"u{i}.txt").write_text(f"v1-{i}\n")
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "GREEN"
         # Mutate a file that falls past the full-content hash window (sorted: u0,u1 hashed;
         # u2+ are overflow meta). Sorted order: u0.txt, u1.txt, u2.txt, u3.txt, u4.txt.
@@ -646,7 +646,7 @@ def test_truncated_untracked_snapshot_cannot_green() -> None:
         fv.MAX_UNTRACKED_META = 2
         for i in range(4):
             (repo / f"many-{i}.txt").write_text(f"{i}\n")
-        v = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        v = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert v["result"] == "RED"
         assert v["workspace_supported"] is False
         assert v["verified_snapshot"] is None
@@ -662,7 +662,7 @@ def test_dispatch_generation_rejects_old_green_after_clock_regression() -> None:
     fc.clear_state(sid)
     _arm(sid, repo)
     try:
-        old = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        old = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert old["result"] == "GREEN"
         assert old["dispatch_generation"] == 0
         assert (repo / "verdict.json").exists()
@@ -742,7 +742,7 @@ def test_state_race_before_verdict_persistence_forces_red() -> None:
 
     try:
         fc.finish_verification = reject_stale_verdict
-        verdict = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        verdict = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert verdict["exit_code"] == 0
         assert verdict["result"] == "RED"
         assert verdict["verified_snapshot"] is None
@@ -990,9 +990,9 @@ def test_large_green_snapshot_persists_bounded_state() -> None:
         "untracked": [],
         "untracked_sha": "untracked",
         "config_sha": "config",
-        "gate_argv": ["/bin/true"],
+        "gate_argv": ["true"],
         "gate_mode": "argv",
-        "gate_identity": fv._gate_identity(["/bin/true"], "argv"),
+        "gate_identity": fv._gate_identity(["true"], "argv"),
         "diff_sha": "diff",
         "paths": huge_paths,
         "snapshot_id": "bounded-state-snapshot",
@@ -1003,7 +1003,7 @@ def test_large_green_snapshot_persists_bounded_state() -> None:
 
     try:
         fv.capture_workspace_snapshot = large_snapshot
-        verdict = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        verdict = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert verdict["result"] == "GREEN"
         state_path = fc.state_path(sid)
         assert state_path.stat().st_size <= fc.MAX_JSON_DOCUMENT_BYTES
@@ -1011,7 +1011,7 @@ def test_large_green_snapshot_persists_bounded_state() -> None:
         recorded = state["verdict"]["verified_snapshot"]
         assert recorded["snapshot_id"] == "bounded-state-snapshot"
         assert "paths" not in recorded
-        approved = _approved_gate("/bin/true", repo)
+        approved = _approved_gate("true", repo)
         assert fv.verdict_is_snapshot_fresh_green(
             state["verdict"],
             state["last_dispatch_ts"],
@@ -1268,7 +1268,7 @@ def test_disarm_cleans_legacy_approved_workspace_receipt() -> None:
     legacy = {
         "schema_version": 2,
         "result": "GREEN",
-        "gate": "/bin/true",
+        "gate": "true",
         "exit_code": 0,
         "diff_sha": "legacy-disarm",
         "ts": 1.0,
@@ -1279,7 +1279,7 @@ def test_disarm_cleans_legacy_approved_workspace_receipt() -> None:
             sid,
             armed=True,
             verdict=legacy,
-            approved_gate=_approved_gate("/bin/true", repo),
+            approved_gate=_approved_gate("true", repo),
             verdict_path=None,
         )
         state = fc.disarm_session(sid)
@@ -1380,7 +1380,7 @@ def test_state_mutation_after_final_snapshot_forces_red() -> None:
 
     try:
         fv.capture_workspace_snapshot = mutate_after_capture
-        verdict = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        verdict = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert verdict["exit_code"] == 0
         assert verdict["result"] == "RED"
         assert verdict["verified_snapshot"] is None
@@ -1398,7 +1398,7 @@ def test_stop_hook_blocks_corrupt_global_config_after_green() -> None:
     _arm(sid, repo)
     old_config = fc.GLOBAL_CONFIG.read_bytes() if fc.GLOBAL_CONFIG.exists() else None
     try:
-        verdict = fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+        verdict = fv.run_gate("true", session_id=sid, cwd=str(repo))
         assert verdict["result"] == "GREEN"
         fc.write_text_owner_only(fc.GLOBAL_CONFIG, "{broken global config")
         proc = _run_stop(sid, cwd=repo)
@@ -1430,7 +1430,7 @@ def test_verdict_artifact_failure_clears_session_authority() -> None:
     try:
         fc.write_json_owner_only_no_replace = fail_artifact
         try:
-            fv.run_gate("/bin/true", session_id=sid, cwd=str(repo))
+            fv.run_gate("true", session_id=sid, cwd=str(repo))
         except OSError as exc:
             assert "artifact write failure" in str(exc)
         else:

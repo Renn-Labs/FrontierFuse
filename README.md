@@ -4,7 +4,7 @@ Pair a selectable frontier model with a separate coding executor. FrontierFuse s
 Claude, Grok, and Gemini providers in executor-led `advisor` and frontier-led `orchestrator`
 profiles. Fable 5 is the recommended Claude frontier model, not the only brain.
 
-Current version: **0.3.2**
+Current version: **0.3.3**
 
 ## Copy This Into Your Coding Harness
 

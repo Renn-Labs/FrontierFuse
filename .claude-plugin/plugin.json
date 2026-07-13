@@ -1,6 +1,6 @@
 {
   "name": "frontierfuse",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Pair a selectable Fable, GPT, Claude, Grok, or Gemini frontier model with a separate Codex, Claude, Grok, or Gemini executor. Includes advisor and verified orchestrator profiles.",
   "author": {
     "name": "Renn Labs"
