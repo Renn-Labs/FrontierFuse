@@ -142,31 +142,34 @@ telemetry or background activity.
 Non-goals: daemon, startup ping, machine identifier, automatic update, custom marketplace service,
 Codex/Grok plugin packages.
 
-## Release 0.2.8 - Reliable Configuration and Diagnostics
+## Release 0.3.2 - Reliable Configuration and Diagnostics (Delivered)
 
 Goal: make configuration failures recoverable and readiness reports trustworthy.
 
 ### Tasks
 
-- [ ] Add `schema_version` to global config, session config, state, handoff cards, and verdicts.
-- [ ] Validate every executor, model, effort, binding, and permission-profile value.
-- [ ] Fail closed on unknown executors instead of falling through to Codex.
-- [ ] Write JSON atomically through owner-only temporary files plus `os.replace`.
-- [ ] Add advisory file locks for concurrent configuration and state writes.
-- [ ] Preserve a timestamped owner-only backup before explicit migrations.
-- [ ] Add typed doctor states: ready, CLI missing, auth required, model unavailable, preview not
-      entitled, CLI incompatible, probe failed, and unknown.
-- [ ] Keep `doctor` offline; add an explicit warning before any `doctor --probe` network call.
-- [ ] Synchronize core, MCP server, plugin, marketplace, and protocol versions.
-- [ ] Replace non-portable shell path resolution with Python entry points.
-- [ ] Add Linux and macOS CI coverage for config recovery and command construction.
+- [x] Add `schema_version` to global config, session state, handoff cards, and verdicts.
+- [x] Validate every persisted executor, model, effort, profile, fast-mode, and update-mode value.
+- [x] Fail closed on unknown executors instead of falling through to Codex.
+- [x] Write JSON atomically through owner-only temporary files plus `os.replace`.
+- [x] Add advisory file locks for concurrent configuration and state writes.
+- [x] Preserve a timestamped owner-only backup before explicit repair.
+- [x] Add typed offline doctor states and machine-readable recovery actions for configuration,
+      CLI, installation, state-directory, and update readiness.
+- [x] Keep `doctor` offline unless the existing explicit `--check-updates` path is selected.
+- [x] Synchronize core, MCP server, plugin, marketplace, and documentation versions.
+- [x] Add Linux and macOS CI coverage for config recovery and command construction.
+
+Live auth, model entitlement, CLI compatibility, and probe-failure classification require the
+provider capability contract and remain in `0.4.0`; no default doctor path makes provider calls.
 
 ### Acceptance evidence
 
-- [ ] Corrupt, truncated, wrong-type, concurrent, and interrupted writes recover without data loss.
-- [ ] Every doctor failure prints one actionable next step.
-- [ ] No startup path rewrites legacy files.
-- [ ] Clean install, rollback, and uninstall fixtures pass on Linux and macOS.
+- [x] Corrupt, truncated, wrong-type, concurrent, and interrupted writes fail closed or recover
+      through explicit backed-up repair without silent data loss.
+- [x] Every typed doctor failure prints one actionable next step.
+- [x] No startup path rewrites legacy files.
+- [x] Configuration recovery contracts run on Linux and macOS for Python 3.10 and 3.12.
 
 Non-goals: live entitlement checks by default, new marketplaces, rebrand.
 
@@ -379,5 +382,5 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-The active build is `0.3.1`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
+The active build is `0.3.2`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
 and evidence gates are satisfied.

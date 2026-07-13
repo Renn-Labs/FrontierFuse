@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import subprocess
@@ -49,7 +50,8 @@ def main() -> int:
         def newer(_url: str, _timeout: float) -> dict:
             nonlocal calls
             calls += 1
-            return {"version": "0.3.2"}
+            major, minor, patch = update.semver_tuple(update.CURRENT_VERSION)
+            return {"version": f"{major}.{minor}.{patch + 1}"}
 
         result = update.check_for_updates(
             allow_network=True, fetcher=newer, now=1000, mode="passive"
@@ -97,6 +99,73 @@ def main() -> int:
         )
         assert malformed["status"] == "unknown", malformed
 
+        cache.write_text(
+            '{"checked_at": NaN, "latest_version": ' + json.dumps(update.CURRENT_VERSION) + "}\n"
+        )
+        nonstandard = update.check_for_updates(
+            allow_network=False, now=2002, mode="passive"
+        )
+        assert nonstandard["status"] == "unknown", nonstandard
+        assert "NaN" not in json.dumps(nonstandard, allow_nan=False)
+
+        cache.write_text(
+            json.dumps({
+                "checked_at": 2002,
+                "latest_version": update.CURRENT_VERSION,
+                "padding": "x" * update.fc.MAX_JSON_DOCUMENT_BYTES,
+            })
+        )
+        oversized = update.check_for_updates(
+            allow_network=False, now=2002, mode="passive"
+        )
+        assert oversized["status"] == "unknown", oversized
+
+        invalid_manifest = update.check_for_updates(
+            allow_network=True,
+            fetcher=lambda _url, _timeout: '{"version": NaN}',
+            now=2003,
+            mode="manual",
+            force=True,
+        )
+        assert invalid_manifest["status"] == "unknown", invalid_manifest
+
+        old_timeout = os.environ.get("FRONTIER_UPDATE_TIMEOUT")
+        os.environ["FRONTIER_UPDATE_TIMEOUT"] = "inf"
+        try:
+            observed_timeout = None
+
+            def finite_timeout(_url: str, timeout: float) -> dict:
+                nonlocal observed_timeout
+                observed_timeout = timeout
+                return {"version": update.CURRENT_VERSION}
+
+            finite = update.check_for_updates(
+                allow_network=True,
+                fetcher=finite_timeout,
+                now=2004,
+                mode="manual",
+                force=True,
+            )
+            assert finite["status"] == "current", finite
+            assert observed_timeout is not None and math.isfinite(observed_timeout)
+        finally:
+            if old_timeout is None:
+                os.environ.pop("FRONTIER_UPDATE_TIMEOUT", None)
+            else:
+                os.environ["FRONTIER_UPDATE_TIMEOUT"] = old_timeout
+
+        cache.unlink()
+        os.mkfifo(cache)
+        fifo_doctor = subprocess.run(
+            [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor", "--json"],
+            cwd=str(ROOT),
+            env=_env(cache),
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        assert fifo_doctor.returncode in (0, 1), fifo_doctor
+        assert json.loads(fifo_doctor.stdout)["ready"] in (True, False)
         cache.unlink()
         doctor = subprocess.run(
             [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor"],

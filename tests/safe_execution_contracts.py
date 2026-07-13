@@ -112,6 +112,17 @@ def test_grok_default_omits_bypass_permissions() -> None:
         _restore("FRONTIER_GROK_PERMISSION_MODE", old_perm)
 
 
+def test_grok_fast_mode_rejects_xhigh_effort() -> None:
+    cfg = _base_cfg(executor="grok")
+    cfg.update({"fast": True, "fast_effort": "xhigh"})
+    try:
+        fc.build_grok_command(cfg)
+    except ValueError as exc:
+        assert "Grok reasoning effort" in str(exc)
+    else:
+        raise AssertionError("Grok fast mode must reject Codex-only xhigh effort")
+
+
 def test_body_command_defaults_match_builders() -> None:
     old_body = _env("FRONTIER_BODY_CMD", None)
     old_exec = _env("FRONTIER_EXECUTOR_CMD", None)
@@ -512,6 +523,7 @@ def main() -> int:
     tests = [
         test_codex_default_omits_yolo,
         test_grok_default_omits_bypass_permissions,
+        test_grok_fast_mode_rejects_xhigh_effort,
         test_body_command_defaults_match_builders,
         test_codex_yolo_opt_in,
         test_grok_yolo_and_permission_mode_opt_in,

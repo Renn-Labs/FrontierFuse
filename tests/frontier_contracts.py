@@ -168,6 +168,14 @@ def test_build_codex_command_fast_swaps_effort() -> None:
             "-c", "model_reasoning_effort=low", "-",
         ], cmd
 
+        cfg["fast_model"] = None
+        cmd = fc.build_codex_command(cfg)
+        assert cmd[cmd.index("--model") + 1] == "codex-test-model"
+
+        cfg["fast_model"] = ""
+        cmd = fc.build_codex_command(cfg)
+        assert "--model" not in cmd, cmd
+
         cfg["fast"] = False
         cmd = fc.build_codex_command(cfg)
         assert cmd == [
@@ -181,6 +189,40 @@ def test_build_codex_command_fast_swaps_effort() -> None:
         _restore("FRONTIER_CODEX_YOLO", old_yolo)
         _restore("FRONTIER_CODEX_CMD", old_cmd)
         os.environ["FRONTIER_CODEX_CMD"] = "echo"
+
+
+def test_empty_fast_model_environment_selects_account_default() -> None:
+    old_fast = _env("FRONTIER_CODEX_FAST", "1")
+    old_model = _env("FRONTIER_CODEX_MODEL", "pinned-model")
+    old_fast_model = _env("FRONTIER_CODEX_FAST_MODEL", "")
+    try:
+        cfg = fc.resolve_config()
+        assert cfg["fast_model"] == ""
+        assert fc.build_codex_command(cfg) == ["echo"]
+    finally:
+        _restore("FRONTIER_CODEX_FAST", old_fast)
+        _restore("FRONTIER_CODEX_MODEL", old_model)
+        _restore("FRONTIER_CODEX_FAST_MODEL", old_fast_model)
+
+
+def test_cli_can_restore_fast_model_inheritance() -> None:
+    sid = "fast-model-inheritance"
+    try:
+        configured = _run_dispatch(
+            ["config", "--fast", "on", "--model", "pinned-fast-model"],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert configured.returncode == 0, configured
+        assert fc.read_state(sid)["config"]["fast_model"] == "pinned-fast-model"
+
+        inherited = _run_dispatch(
+            ["config", "--inherit-fast-model"],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert inherited.returncode == 0, inherited
+        assert fc.read_state(sid)["config"]["fast_model"] is None
+    finally:
+        fc.clear_state(sid)
 
 
 def test_build_body_command_executor() -> None:
@@ -551,6 +593,71 @@ def test_dispatch_separates_profile_frontier_and_executor_models() -> None:
         fc.clear_state(sid)
 
 
+def test_codex_xhigh_dispatch_does_not_override_grok_effort() -> None:
+    sid = "contract-codex-xhigh-dispatch"
+    fc.clear_state(sid)
+    try:
+        proc = _run_dispatch(
+            ["--dry-run", "--executor", "codex", "--effort", "xhigh", "deep Codex task"],
+            extra_env={"FRONTIER_SESSION_ID": sid, "FRONTIER_CODEX_CMD": ""},
+        )
+        assert proc.returncode == 0, f"Codex xhigh dry-run failed: {proc.stdout!r} {proc.stderr!r}"
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["executor"] == "codex"
+        assert payload["mode"]["codex_effort"] == "xhigh"
+        assert payload["mode"]["grok_effort"] in fc.GROK_EFFORT_LEVELS
+        assert "model_reasoning_effort=xhigh" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            [
+                "--dry-run", "--executor", "codex", "--fast", "on", "--effort", "xhigh",
+                "--model", "fast-codex-model", "fast Codex task",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid, "FRONTIER_CODEX_CMD": ""},
+        )
+        assert proc.returncode == 0, proc
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["fast"] is True
+        assert payload["mode"]["fast_effort"] == "xhigh"
+        assert payload["mode"]["fast_model"] == "fast-codex-model"
+        assert "model_reasoning_effort=xhigh" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            [
+                "config", "--executor", "codex", "--fast", "on", "--effort", "xhigh",
+                "--model", "configured-fast-model",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, proc
+        configured = json.loads(proc.stdout)
+        assert configured["fast_effort"] == "xhigh"
+        assert configured["fast_model"] == "configured-fast-model"
+
+        proc = _run_dispatch(
+            [
+                "--dry-run", "--executor", "grok", "--fast", "on", "--effort", "high",
+                "--model", "fast-grok-model", "fast Grok task",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid, "FRONTIER_GROK_CMD": ""},
+        )
+        assert proc.returncode == 0, proc
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["grok_model"] == "fast-grok-model"
+        assert payload["mode"]["fast_model"] == "configured-fast-model"
+        assert "grok --model fast-grok-model" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            ["--dry-run", "--executor", "grok", "--fast", "on", "--effort", "xhigh", "invalid Grok task"],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 2
+        assert "dispatch refused" in proc.stderr
+        assert "Traceback" not in proc.stderr
+    finally:
+        fc.clear_state(sid)
+
+
 def test_dispatch_config_accepts_grok_executor() -> None:
     """Grok Build can be the lead/body executor via the local grok CLI."""
     sid = "contract-grok-executor"
@@ -585,7 +692,8 @@ def test_dispatch_config_accepts_grok_executor() -> None:
         )
         assert proc.returncode == 0, f"doctor grok override failed: {proc.stdout!r} {proc.stderr!r}"
         assert "grok body CLI" in proc.stdout
-        assert sys.executable in proc.stdout
+        assert Path(sys.executable).name in proc.stdout
+        assert "argument(s) redacted" in proc.stdout
     finally:
         fc.clear_state(sid)
 
@@ -649,6 +757,10 @@ def test_cmd_done_refuses_without_fresh_green() -> None:
             assert proc.returncode != 0, "GREEN from a non-approved gate must not disarm"
             assert fc.read_state(sid)["armed"] is True
 
+            # Start the next independent scenario without carrying over the forged receipt.
+            # Direct state mutation above intentionally discarded its managed identity, so the
+            # runtime must not infer ownership and delete the file itself.
+            (Path(td) / "verdict.json").unlink()
             fc.write_state(sid, armed=True, last_dispatch_ts=100.0, verdict=None,
                            approved_gate=approved)
             verdict = frontier_verify.run_gate("true", session_id=sid, cwd=td)
@@ -741,6 +853,11 @@ def test_stop_gate_contracts() -> None:
             assert proc.returncode == 0, (
                 f"snapshot-bound GREEN should allow Stop; rc={proc.returncode} "
                 f"stderr={proc.stderr!r}")
+            retained = fc.read_state(sid)
+            assert retained["armed"] is True
+            assert retained["completion_pending"] is True
+            assert retained["completion_closed"] is False
+            assert retained["verdict"]["result"] == "GREEN"
         finally:
             _restore("FRONTIER_GUARDS_OFF", old_guards)
             fc.clear_state(sid)
@@ -750,6 +867,8 @@ def main() -> int:
     tests = [
         test_resolve_config_precedence,
         test_build_codex_command_fast_swaps_effort,
+        test_empty_fast_model_environment_selects_account_default,
+        test_cli_can_restore_fast_model_inheritance,
         test_build_body_command_executor,
         test_advisor_prompt_uses_selected_claude_model,
         test_make_verdict_and_fresh_green,
@@ -762,6 +881,7 @@ def main() -> int:
         test_pretool_gate_allows_only_frozen_verification,
         test_session_id_defaults_to_claude_code_session_id,
         test_dispatch_separates_profile_frontier_and_executor_models,
+        test_codex_xhigh_dispatch_does_not_override_grok_effort,
         test_dispatch_config_accepts_grok_executor,
         test_manual_hook_install_is_atomic_owner_only_and_aligned,
         test_arm_freezes_verification_command,

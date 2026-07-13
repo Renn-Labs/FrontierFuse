@@ -8,6 +8,128 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.2] - 2026-07-12
+
+### Added
+- Typed `frontier-dispatch doctor --json` results with an actionable next step for missing CLIs,
+  malformed configuration, inactive hooks, unwritable state, and unknown release status. The
+  read-only JSON diagnostic remains allowed by the armed command policy.
+- Explicit `frontier-dispatch config --repair --global` recovery. FrontierFuse preserves the exact
+  malformed file in an owner-only timestamped backup before writing a minimal current-schema config.
+- Equivalent backed-up session-state recovery through `frontier-dispatch config --repair`; armed
+  hooks deny safely instead of treating malformed state as unarmed.
+- Schema versions for global configuration, session state, and handoff cards.
+- Linux and macOS CI coverage across Python 3.10 and 3.12.
+
+### Security
+- Accepted verification receipts are now bound to the exact host session; every session ID uses a
+  collision-resistant digest filename that remains distinct on case-insensitive filesystems. Legacy receipt ownership survives dispatch,
+  disarm, and malformed-state repair when its workspace path is not yet known.
+- Doctor, configuration, state, and hook-settings JSON reads now reject special files without
+  blocking and enforce a bounded regular-file read before decoding.
+- Legacy noncanonical session-state paths fail closed until explicit repair, oversized malformed
+  JSON is preserved by atomic rename before reset, and authoritative GREEN state stores only the
+  snapshot identity fields required for live revalidation.
+- Manual hook detection follows Claude Code's matcher contract: omitted PreToolUse matchers cover
+  every tool, while Stop matchers are ignored by the host and therefore always cover the event.
+- Offline update-cache reads now use the same bounded regular-file probe as doctor/config state, and
+  malformed session identifiers are rejected consistently before state-path hashing.
+- Global configuration now fails closed when JSON is corrupt, has the wrong top-level type, uses an
+  unsupported schema, or contains invalid provider/profile/model/effort/update values. The file is
+  never silently overwritten by a later config write.
+- Global config and session-state read/modify/write cycles are serialized with owner-only advisory
+  lock files, retaining atomic owner-only replacement for the final write. Verification and close
+  decisions hold the global lock through their final configuration freshness check.
+- Active executor runs are tracked in session state, and `done` now uses a compare-and-set disarm
+  transition over a monotonic whole-state revision so any concurrent session mutation prevents a
+  stale close. Dispatch identities include a UUID so concurrent calls in one long-lived process
+  cannot collapse into one active-work marker.
+- A successful Stop-hook check validates GREEN without consuming it, because another host hook may
+  still block termination. It atomically fences queued dispatch and verification work; a subsequent
+  PreTool event proves that termination was blocked, reopens the session, advances its generation,
+  and invalidates GREEN. The explicit `done` command consumes GREEN and closes the generation.
+- Persisted JSON rejects non-standard numeric constants and non-finite timestamps, preventing
+  `NaN` from bypassing freshness comparisons. Explicit host-side disarm clears orphan run markers.
+- Verdicts are bound to a monotonic dispatch generation, and dispatch start clears the prior
+  verdict, so wall-clock rollback cannot validate an older GREEN against newer work. Verdict
+  persistence also uses the state revision, so a dispatch racing final verification forces RED.
+- Hook payloads now fail closed when JSON is malformed, not an object, or invalid UTF-8; invalid
+  UTF-8 persisted state is classified as corrupt and routed through explicit backed-up repair.
+- Verification now freezes its state-revision baseline before snapshot capture, so any session
+  mutation through the final-snapshot/persistence window forces RED.
+- Owner-only verdict writes preserve the checkout directory's existing permissions. State reads
+  recursively reject non-finite or non-serializable retained values so explicit repair cannot be
+  bypassed by a poisoned nested verdict or gate payload.
+- Each verification attempt invalidates its predecessor before running, preventing an older GREEN
+  from surviving a newer failed verification. Active verification IDs prevent overlapping gates
+  from publishing GREEN, and Stop revalidates session revision after its live workspace snapshot so
+  a concurrent dispatch cannot close against cached state.
+- Verification start clears session authority before removing the shared receipt; an artifact
+  cleanup failure therefore cannot leave an older GREEN authoritative.
+- The shared `verdict.json` receipt is cleared when verification or dispatch starts and rewritten
+  only while the same verification ID remains authoritative in session state. Final publication
+  rechecks dispatch generation and active work under lock; artifact I/O failure clears session
+  authority. The current receipt path remains tracked independently of armed-gate metadata, so an
+  unarmed verification receipt is also invalidated by later executor work; cleanup deletes only a
+  structurally recognized FrontierFuse receipt (including a state-matched legacy v2 receipt) and
+  never revisits historical workspaces. Verification refuses to replace a pre-existing unrelated
+  file, symlink, directory, gate-created file, or another session's receipt at the receipt path.
+  Receipts carry session ownership. Persisted receipt and approved-workspace paths must be normalized
+  absolute filesystem paths before cleanup can use them. Failed cleanup retains compact
+  non-authoritative receipt identity for a later retry without restoring GREEN authority. Receipt
+  publication uses atomic create-if-absent semantics, and matching unarmed 0.3.1 receipts upgrade
+  without manual cleanup. Re-arm retains receipt ownership, disarm retains retry metadata until
+  cleanup succeeds, and cleanup atomically quarantines the pathname before validating and deleting
+  the owned inode. Deferred cleanup keeps its non-authoritative retry identity. Emergency guard kill
+  switches are honored before hook payload parsing.
+- Receipt inspection is nonblocking and size-bounded, so FIFOs and oversized path occupants cannot
+  wedge the session lock. Verification persists pending cleanup identity before publication, and
+  session repair preserves safely recoverable receipt ownership metadata. FrontierFuse compacts
+  diagnostic-heavy generated receipts using the exact publication serializer while preserving result
+  and cleanup identity. Repair also recovers safe 0.3.1 approved-workspace receipt paths and discards
+  non-finite recovery metadata. Cleanup rejects non-regular receipt occupants before quarantine, so
+  a pre-existing `verdict.json/` directory is never displaced.
+
+### Changed
+- The copy/paste setup prompt now tells coding harnesses how to diagnose and repair malformed
+  configuration without discarding the original.
+- Doctor JSON identifies blocking versus optional checks, and dry-run handoff cards now carry the
+  same schema version as live cards.
+- Offline doctor now reports CLI presence without claiming authentication or model entitlement.
+  Non-finite update timeout values fall back to a bounded finite default, and state readiness probes
+  the actual per-session and global-configuration advisory-lock paths.
+- Doctor distinguishes malformed command overrides (`command_invalid`) from absent executables
+  (`cli_missing`) and provides the corresponding recovery action. Doctor redacts command arguments
+  from text and JSON output and validates that installed hook matchers cover mutation and Stop events.
+- Armed `doctor --json` remains filesystem-read-only: readiness checks inspect existing paths and
+  nearest writable parents without creating lock files or changing directory permissions. Probes
+  honor `CLAUDE_CONFIG_DIR`, follow valid writable symlinked ancestors, and reject dangling symlink
+  components.
+- Effort validation is provider-specific: Codex and fast lanes preserve valid `xhigh` settings,
+  while Grok remains constrained to low, medium, or high, including when fast mode is enabled.
+  Dispatch/config `--effort` now targets the active fast preset when fast mode is selected. Codex
+  fast mode uses `fast_model`, where null inherits the regular pin and an explicit empty value uses
+  Codex's account-aware default; `config --inherit-fast-model` restores inheritance after an
+  explicit fast-model selection. Other executors retain their provider-specific model field. Claude
+  and Gemini reject unsupported `--effort` flags instead of silently ignoring them, and setup
+  guidance omits that flag for those providers.
+- Setup guidance now covers persistent PATH configuration, last-known-good checkout rollback,
+  uninstall, and the requirement to re-arm/reverify after session-state repair.
+- Manual Claude hook install/uninstall refuses malformed or unreadable settings instead of
+  replacing them through a soft JSON fallback; install preserves a backup for explicit recovery.
+  Doctor parses both expected hook event structures and reports malformed settings as a probe
+  failure rather than trusting a filename substring.
+- Config writes lock both global and session layers in a consistent order, validate the prospective
+  effective configuration, and persist within the same transaction. Doctor distinguishes permission
+  recovery for unreadable files from backed-up JSON repair, and gives a concrete healing command for
+  cross-layer Grok fast-effort conflicts whose individual files remain structurally valid.
+- Monotonic dispatch generations, rather than wall-clock ordering, determine verdict freshness; a
+  backward system-clock adjustment cannot strand a valid same-generation GREEN.
+- PreTool hooks remain inert for valid unarmed sessions and acquire the session mutation lock only
+  when armed or when reopening a blocked Stop attempt; corrupt persisted state still fails closed.
+- The pre-push doctor smoke uses isolated temporary configuration and state, so a maintainer's local
+  sessions cannot make an otherwise clean public-release gate fail or pass.
+
 ## [0.3.1] - 2026-07-09
 
 ### Changed

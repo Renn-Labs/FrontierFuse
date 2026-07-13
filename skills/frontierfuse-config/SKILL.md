@@ -22,6 +22,10 @@ one question.
    ```
 
    If `$CLAUDE_PLUGIN_ROOT` is unavailable, resolve `frontier-dispatch` from `PATH` or the repository.
+   If configuration is invalid, do not overwrite it directly. Run `frontier-dispatch doctor --json`
+   and follow that check's exact `next_step`: session recovery uses `frontier-dispatch config
+   --repair`, while global recovery adds `--global`. Either command creates an owner-only timestamped
+   backup before resetting the malformed document. Reapply valid selections from the backup.
 
 2. Ask **scope**: this session (default) or global. Global maps to `--global`.
 
@@ -64,7 +68,8 @@ one question.
 
 6. Ask the remaining controls:
 
-   - Effort: `high` (default), `medium`, or `low`.
+   - Effort for Codex/Grok only: `high` (default), `medium`, or `low`; Codex also supports
+     `xhigh`. Omit `--effort` for Claude/Gemini because their executor commands do not expose it.
    - Fast mode: `off` (default) or `on`.
    - Update reminders: `passive` (cached weekly during explicit use), `manual`, or `off`.
 
@@ -77,12 +82,19 @@ one question.
      --frontier-model <model-id> \
      --executor <codex|claude|grok|gemini> \
      --model <model-id-or-empty> \
-     --effort <low|medium|high> --fast <on|off> \
+     [--effort <low|medium|high|xhigh>] --fast <on|off> \
      --update-mode <passive|manual|off> [--global]
    ```
 
 8. Print the effective configuration again and state: "Applied. It takes effect on the next
    `frontier-dispatch` call; it does not change a body already running."
+
+   If the user wants Codex fast mode to follow the regular Codex model again, run a separate reset
+   without `--model`:
+
+   ```bash
+   python3 "$CLAUDE_PLUGIN_ROOT/frontier_dispatch.py" config --inherit-fast-model [--global]
+   ```
 
 ## Permission Defaults
 
@@ -98,6 +110,10 @@ Configuration never enables elevated permissions. These remain explicit host env
 
 - Precedence: per-call flag > session config > `~/.config/frontier-fuse/config.json` > environment >
   built-in default.
+- `xhigh` effort is valid for Codex/fast lanes; Grok effort remains low, medium, or high.
+- `--inherit-fast-model` clears only the Codex fast-model override; it cannot be combined with
+  `--model` in the same command.
 - Config changes do not alter verdicts, arm/disarm state, the frozen gate, or hook behavior.
+- Explicit repair preserves the malformed original in a timestamped owner-only backup.
 - A config change after arming changes the snapshot hash. Re-run verification before closing.
 - If the user only asks to view settings, print the effective config and stop.

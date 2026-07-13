@@ -7,6 +7,7 @@ prompt, or usage information is sent. Callers decide whether network access is a
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 import urllib.request
@@ -15,12 +16,14 @@ from typing import Callable
 
 import frontier_common as fc
 
-CURRENT_VERSION = "0.3.1"
+CURRENT_VERSION = "0.3.2"
 DEFAULT_UPDATE_URL = (
     "https://raw.githubusercontent.com/Renn-Labs/FrontierFuse/"
     "master/.claude-plugin/plugin.json"
 )
 DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_UPDATE_TIMEOUT = 3.0
+MAX_UPDATE_TIMEOUT = 30.0
 
 
 def _cache_path() -> Path:
@@ -32,6 +35,16 @@ def _ttl_seconds() -> int:
         return max(0, int(os.environ.get("FRONTIER_UPDATE_TTL_SECONDS", DEFAULT_TTL_SECONDS)))
     except ValueError:
         return DEFAULT_TTL_SECONDS
+
+
+def _network_timeout() -> float:
+    try:
+        timeout = float(os.environ.get("FRONTIER_UPDATE_TIMEOUT", str(DEFAULT_UPDATE_TIMEOUT)))
+    except (TypeError, ValueError, OverflowError):
+        return DEFAULT_UPDATE_TIMEOUT
+    if not math.isfinite(timeout):
+        return DEFAULT_UPDATE_TIMEOUT
+    return min(MAX_UPDATE_TIMEOUT, max(0.1, timeout))
 
 
 def semver_tuple(value: str) -> tuple[int, int, int]:
@@ -53,8 +66,18 @@ def _status(latest: str) -> str:
 
 def _read_cache() -> dict:
     try:
-        data = json.loads(_cache_path().read_text())
-    except (FileNotFoundError, OSError, ValueError):
+        data = json.loads(
+            fc.read_bounded_regular_text(_cache_path()),
+            parse_constant=fc._reject_json_constant,
+        )
+    except (
+        FileNotFoundError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+    ):
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -73,7 +96,9 @@ def _cached_result(cache: dict, now: float) -> dict:
         }
     try:
         checked_at = float(cache.get("checked_at") or 0.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        checked_at = 0.0
+    if not math.isfinite(checked_at):
         checked_at = 0.0
     return {
         "status": status,
@@ -100,7 +125,12 @@ def check_for_updates(
     now: float | None = None,
 ) -> dict:
     """Return release status without raising on network or metadata failures."""
-    now = time.time() if now is None else float(now)
+    try:
+        now = time.time() if now is None else float(now)
+    except (TypeError, ValueError, OverflowError):
+        now = time.time()
+    if not math.isfinite(now):
+        now = time.time()
     mode = str(mode or "passive").lower()
     if mode not in fc.UPDATE_MODES:
         mode = "passive"
@@ -122,14 +152,16 @@ def check_for_updates(
 
     url = os.environ.get("FRONTIER_UPDATE_URL", DEFAULT_UPDATE_URL)
     try:
-        timeout = max(0.1, float(os.environ.get("FRONTIER_UPDATE_TIMEOUT", "3")))
+        timeout = _network_timeout()
         raw = (fetcher or _fetch_manifest)(url, timeout)
         if isinstance(raw, dict):
             manifest = raw
         else:
             if isinstance(raw, bytes):
                 raw = raw.decode("utf-8")
-            manifest = json.loads(raw)
+            manifest = json.loads(raw, parse_constant=fc._reject_json_constant)
+        if not isinstance(manifest, dict):
+            raise ValueError("release manifest must be an object")
         latest = str(manifest.get("version") or "")
         status = _status(latest)
         fc.write_json_owner_only(
@@ -144,7 +176,7 @@ def check_for_updates(
             "checked_at": now,
             "cache_fresh": True,
         }
-    except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+    except (OSError, ValueError, TypeError, UnicodeError, RecursionError, json.JSONDecodeError):
         if cached["status"] != "unknown":
             cached["stale"] = True
             return cached

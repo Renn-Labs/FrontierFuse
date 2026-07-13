@@ -184,6 +184,9 @@ commit `runs/`, `verdict.json`, provider transcripts, or local state.
 ```bash
 frontier-dispatch config                     # effective settings
 frontier-dispatch doctor                     # offline readiness
+frontier-dispatch doctor --json              # typed readiness and recovery actions
+frontier-dispatch config --repair --global   # backed-up malformed-config recovery
+frontier-dispatch config --repair            # backed-up current-session recovery
 frontier-dispatch doctor --check-updates     # readiness plus explicit release check
 frontier-dispatch update --check             # cached release check
 ```

@@ -39,7 +39,10 @@ While a session is **armed** on Claude Code's PreToolUse hook:
 
 The Stop hook blocks a clean finish unless a **fresh snapshot-bound GREEN** exists (zero gate exit,
 stable matching workspace snapshot, not legacy, not unsafe shell). Prose "GREEN" never closes the
-loop.
+loop. Stop validation does not disarm or consume GREEN because other host hooks may still block the
+same Stop event. It fences queued work until either the host exits or a subsequent PreTool event
+reopens the session and invalidates GREEN; only explicit `frontier-dispatch done` performs the
+consuming close transition.
 
 ### Frozen verifier (host-approved)
 
@@ -90,4 +93,4 @@ review before relying on it.
 
 ## Supported versions
 
-FrontierFuse is pre-1.0; only the latest `main` is supported.
+FrontierFuse is pre-1.0; only the latest `master` release is supported.

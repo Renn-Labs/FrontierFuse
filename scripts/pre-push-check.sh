@@ -96,6 +96,9 @@ for needle in (
     "codex mcp add frontier-advisor",
     "grok mcp add frontier-advisor",
     "git pull --ff-only",
+    "last-known-good",
+    "/plugin uninstall frontierfuse@frontierfuse",
+    "master",
     version,
 ):
     if needle not in readme:
@@ -235,7 +238,14 @@ printf '%s\n' "$gemini_smoke" | grep -q 'gemini --model gemini-3.5-flash' \
 # Output must include an explicit readiness line so a silent crash cannot pass.
 step "doctor (readiness; exit 1 = body CLI missing, non-blocking)"
 set +e
-doctor_out="$(python3 frontier_dispatch.py doctor 2>&1)"
+doctor_out="$(
+  FRONTIER_CONFIG_DIR="$tmpdir/doctor-config" \
+  FRONTIER_STATE_DIR="$tmpdir/doctor-state" \
+  FRONTIER_RUNS_DIR="$tmpdir/doctor-runs" \
+  FRONTIER_SESSION_ID="pre-push-doctor" \
+  CLAUDE_CONFIG_DIR="$tmpdir/doctor-claude" \
+    python3 frontier_dispatch.py doctor 2>&1
+)"
 doctor_rc=$?
 set -e
 printf '%s\n' "$doctor_out"

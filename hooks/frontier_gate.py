@@ -244,8 +244,11 @@ def _dispatch_argv_allowed(args: list[str], approved_gate: dict | None = None) -
     if sub not in _DISPATCH_ALLOWED_SUBS:
         return False
 
-    if sub == "done" or sub == "doctor":
+    if sub == "done":
         return all(a in _HELP_FLAGS for a in rest)
+
+    if sub == "doctor":
+        return all(a in {*_HELP_FLAGS, "--json"} for a in rest)
 
     if sub == "verify":
         # The host freezes the verifier argv/workspace at arm time. The model may only invoke that
@@ -465,24 +468,63 @@ def _normalized_for_allowlist(cmd: str) -> str:
 
 
 def main() -> None:
+    if fc.guards_off():
+        _allow()
     try:
         data = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)
-    if fc.guards_off():
+        _deny("FrontierFuse workflow guardrail: invalid hook input; denying safely.")
+    if not isinstance(data, dict):
+        _deny("FrontierFuse workflow guardrail: invalid hook input; expected a JSON object.")
+    raw_sid = data.get("session_id")
+    if raw_sid is not None and not fc.session_id_is_valid(raw_sid):
+        _deny("FrontierFuse workflow guardrail: invalid hook input; session_id must be a string.")
+    sid = raw_sid or "default"
+    tool = data.get("tool_name", "")
+    if not isinstance(tool, str):
+        _deny("FrontierFuse workflow guardrail: invalid hook input; tool_name must be a string.")
+    ti = data.get("tool_input", {})
+    if ti is None:
+        ti = {}
+    if not isinstance(ti, dict):
+        _deny("FrontierFuse workflow guardrail: invalid hook input; tool_input must be an object.")
+    try:
+        state = fc.read_state(sid)
+    except fc.StateFileError:
+        _deny(
+            "FrontierFuse workflow guardrail: session state is invalid. Preserve it and run "
+            "`frontier-dispatch config --repair` from the host before continuing."
+        )
+    except Exception:
+        _deny(
+            "FrontierFuse workflow guardrail: session state could not be validated safely; "
+            "denying the tool call. Fix the state and lock paths from the host, then retry."
+        )
+    if not state.get("armed") and not state.get("completion_pending"):
         _allow()
-    sid = data.get("session_id") or "default"
-    state = fc.read_state(sid)
+    try:
+        state = fc.reopen_after_blocked_stop(sid)
+    except fc.StateFileError:
+        _deny(
+            "FrontierFuse workflow guardrail: session state is invalid. Preserve it and run "
+            "`frontier-dispatch config --repair` from the host before continuing."
+        )
+    except Exception:
+        _deny(
+            "FrontierFuse workflow guardrail: session state could not be validated safely; "
+            "denying the tool call. Fix the state and lock paths from the host, then retry."
+        )
     if not state.get("armed"):
         _allow()
-    tool = data.get("tool_name", "")
-    ti = data.get("tool_input") or {}
     if tool in BLOCK_TOOLS:
         if fc._as_bool(os.environ.get("FRONTIER_GATE_ALLOW_TRIVIAL")):
             _allow()
         _deny(f"{tool} blocked. {MSG}")
     if tool == "Bash":
-        cmd = (ti.get("command") or "").strip()
+        raw_cmd = ti.get("command") or ""
+        if not isinstance(raw_cmd, str):
+            _deny("FrontierFuse workflow guardrail: invalid hook input; command must be a string.")
+        cmd = raw_cmd.strip()
         if bash_command_allowed(cmd, state.get("approved_gate")):
             _allow()
         _deny(f"Bash blocked: {cmd[:60]!r}. {MSG}")

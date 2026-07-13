@@ -1,4 +1,4 @@
-# FrontierFuse Architecture (0.3.1)
+# FrontierFuse Architecture (0.3.2)
 
 This document describes the shipped Claude Code plugin. The roadmap is in
 `docs/FRONTIERFUSE_EXECUTION_PLAN.md`.
@@ -116,11 +116,57 @@ Cross-provider prompts leave the machine. Local config, state, prompt files, cac
 handoff cards are written owner-only by FrontierFuse. Generated runs, verdicts, provider logs,
 credentials, and private paths are never release artifacts.
 
+## Configuration Reliability
+
+Global config, session state, and handoff cards carry explicit schema versions. Configuration and
+state updates use owner-only atomic replacement plus advisory file locks on the supported Linux and
+macOS platforms. Persisted provider, profile, effort, model, fast-mode, and update-mode values are
+validated before use; invalid values fail closed.
+
+Malformed global config is never silently replaced. `frontier-dispatch doctor [--json]` reports a
+typed `config_invalid` state and an actionable recovery command. Explicit
+`frontier-dispatch config --repair --global` preserves the exact original in a timestamped `0600`
+backup before writing a minimal current-schema document. The same command without `--global`
+preserves and repairs malformed current-session state. Armed hooks deny safely until invalid state
+is explicitly repaired.
+
+Executor dispatches are recorded as active before provider work begins and removed on completion.
+`done` uses a compare-and-set state transition after snapshot verification, so an overlapping
+dispatch or state change cannot disarm the workflow guardrail with a stale verdict.
+Each dispatch also increments a monotonic generation and clears the prior verdict. Verification
+receipts bind to that generation, so clock rollback cannot make an older GREEN valid for newer work.
+Every session mutation increments a separate state revision. Final verdict persistence and `done`
+use compare-and-set transitions against that revision, so concurrent config, dispatch, or gate-state
+changes cannot commit a stale GREEN or disarm decision. The global configuration lock is held from
+the final gate snapshot through verdict publication, and across close freshness checks, preventing a
+concurrent global update from escaping those decisions without blocking the gate subprocess itself.
+Starting verification clears the previous
+receipt and records an active verification ID. Receipt publication atomically removes that ID and
+succeeds only when the verifier remained the sole unchanged attempt; overlapping verifiers therefore
+return RED. Stop refuses while verification is active and revalidates session revision after its live
+workspace snapshot before accepting GREEN. Accepting GREEN atomically marks that session generation
+closed under the state lock, so a queued dispatch is refused until re-arm or deliberate disarm clears
+the marker. The shared `verdict.json` artifact is cleared at verifier
+or dispatch start, after session authority is invalidated, and written only if that verification ID still owns the authoritative session
+receipt with no active or newer dispatch. Artifact persistence failure clears session authority.
+Non-standard JSON constants and non-finite timestamps fail closed. If a process is killed before
+its run marker can be removed, explicit host-side `disarm` clears orphan markers.
+
+Doctor JSON distinguishes blocking execution prerequisites from optional ecosystem checks with a
+`blocking` field. Optional hook or release-status checks can be unavailable while the selected
+provider CLIs remain ready. Manual Claude hook readiness is determined from parsed `PreToolUse` and
+`Stop` command entries; corrupt JSON or malformed hook structures are reported as `probe_failed`.
+Doctor probes both the session and global-configuration advisory-lock paths used by verification and
+closure before reporting readiness.
+Configuration commands validate the prospective effective defaults/environment/global/session
+composition before writing any layer, preventing individually valid files from creating an unusable
+cross-layer combination.
+
 ## Packaging And Lifecycle
 
 Claude Code uses `.claude-plugin/plugin.json`, the self-referential marketplace manifest,
 conventional hook loading, and skill discovery. Codex and Grok use a stable checkout plus stdio MCP
-registration in 0.3.1; separate marketplace packages are not claimed.
+registration in 0.3.2; separate marketplace packages are not claimed.
 
 Doctor is offline by default. Passive update reminders use an owner-only seven-day cache, send no
 machine or project data, and never mutate an installation.

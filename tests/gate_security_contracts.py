@@ -71,6 +71,7 @@ def test_allowed_loop_commands() -> None:
         "frontier-dispatch -h",
         "frontier-dispatch help",
         "frontier-dispatch doctor",
+        "frontier-dispatch doctor --json",
         "frontier-dispatch done",
         "frontier-dispatch config",
         "frontier-dispatch models",
@@ -385,6 +386,12 @@ def test_hook_armed_enforces_policy() -> None:
             "tool_input": {"command": "frontier-dispatch doctor"},
         })
         _assert(_hook_allowed(proc), f"doctor should allow: {proc.stdout!r} {proc.stderr!r}")
+        proc = _run_hook({
+            "session_id": sid,
+            "tool_name": "Bash",
+            "tool_input": {"command": "frontier-dispatch doctor --json"},
+        })
+        _assert(_hook_allowed(proc), f"doctor --json should allow: {proc.stdout!r} {proc.stderr!r}")
 
         proc = _run_hook({
             "session_id": sid,

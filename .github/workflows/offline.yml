@@ -2,7 +2,7 @@ name: offline
 
 # Keyless, offline-only CI. No API keys, no live model calls — mirrors FrontierFuse's boundary.
 # Runs the stdlib-only contract aggregate (tests/run_contracts.py) + compile checks on the
-# supported Python range (3.10, 3.12).
+# supported Python range (3.10, 3.12) on Linux and macOS.
 
 on:
   push:
@@ -15,10 +15,11 @@ permissions:
 
 jobs:
   contracts:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v7

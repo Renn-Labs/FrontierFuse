@@ -14,8 +14,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
-import shlex
 import subprocess
 import sys
 import time
@@ -35,7 +35,6 @@ MAX_UNTRACKED_BYTES = int(os.environ.get("FRONTIER_SNAPSHOT_MAX_FILE_BYTES", str
 # Metadata (path+size+mtime) for untracked files beyond the full-content hash cap.
 MAX_UNTRACKED_META = int(os.environ.get("FRONTIER_SNAPSHOT_MAX_UNTRACKED_META", "5000"))
 _OVERSIZED_SAMPLE = 65536
-_GATE_PUNCTUATION = "();<>|&`"
 # Verifier-owned artifacts written into cwd after the final snapshot is taken; including them
 # would make every GREEN immediately stale on the next Stop recompute.
 _SNAPSHOT_IGNORE_UNTRACKED = frozenset(
@@ -53,6 +52,7 @@ _STATE_VERDICT_KEYS = (
     "paths",
     "ts",
     "after_dispatch_ts",
+    "dispatch_generation",
     "schema_version",
     "gate_argv",
     "gate_mode",
@@ -63,6 +63,19 @@ _STATE_VERDICT_KEYS = (
     "pre_gate_snapshot",
     "verified_snapshot",
     "final_snapshot",
+    "verification_id",
+    "session_id",
+)
+
+_STATE_SNAPSHOT_KEYS = (
+    "version",
+    "workspace_root",
+    "git_worktree",
+    "snapshot_complete",
+    "snapshot_id",
+    "gate_identity",
+    "gate_argv",
+    "gate_mode",
 )
 
 
@@ -326,6 +339,24 @@ def snapshots_equal(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
     return id_a == id_b and bool(id_a)
 
 
+def _state_verdict_for_persistence(verdict: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the snapshot identity and gate fields required by the Stop verifier."""
+    persisted = {
+        key: verdict[key]
+        for key in _STATE_VERDICT_KEYS
+        if key in verdict and key not in {"paths", "pre_gate_snapshot", "verified_snapshot", "final_snapshot"}
+    }
+    persisted["paths"] = []
+    for key in ("pre_gate_snapshot", "verified_snapshot", "final_snapshot"):
+        snapshot = verdict.get(key)
+        persisted[key] = (
+            {field: snapshot[field] for field in _STATE_SNAPSHOT_KEYS if field in snapshot}
+            if isinstance(snapshot, dict)
+            else None
+        )
+    return persisted
+
+
 def _diff_fingerprint(cwd: str) -> tuple[str, list[str]]:
     """Best-effort legacy fingerprint (unstaged diff only). Prefer capture_workspace_snapshot."""
     snap = capture_workspace_snapshot(cwd, session_id="default", gate_argv=[], gate_mode="argv")
@@ -334,17 +365,7 @@ def _diff_fingerprint(cwd: str) -> tuple[str, list[str]]:
 
 def parse_gate_argv(gate: str) -> list[str]:
     """Parse one simple argv-style gate command; reject shell syntax and empty input."""
-    if "\n" in (gate or "") or "\r" in (gate or ""):
-        raise ValueError("shell newlines are not allowed in an argv gate")
-    lexer = shlex.shlex(gate or "", posix=True, punctuation_chars=_GATE_PUNCTUATION)
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    argv = list(lexer)
-    if not argv:
-        raise ValueError("empty gate command")
-    if any(token and all(char in _GATE_PUNCTUATION for char in token) for token in argv):
-        raise ValueError("shell syntax is not allowed in an argv gate")
-    return argv
+    return fc.parse_gate_argv(gate)
 
 
 def _write_owner_only(path: Path, text: str) -> None:
@@ -408,7 +429,8 @@ def is_snapshot_bound_verdict(verdict: dict | None) -> bool:
     """True when a verdict carries the 0.2.6+ snapshot schema (not legacy-only)."""
     if not isinstance(verdict, dict):
         return False
-    if int(verdict.get("schema_version") or 0) < VERDICT_SCHEMA_VERSION:
+    schema = verdict.get("schema_version")
+    if type(schema) is not int or schema < VERDICT_SCHEMA_VERSION:
         return False
     return isinstance(verdict.get("verified_snapshot"), dict) or isinstance(
         verdict.get("final_snapshot"), dict
@@ -418,6 +440,7 @@ def is_snapshot_bound_verdict(verdict: dict | None) -> bool:
 def verdict_is_snapshot_fresh_green(
     verdict: dict | None,
     last_dispatch_ts: float,
+    dispatch_generation: int,
     session_id: str = "default",
     cwd: str | None = None,
     approved_gate: dict | None = None,
@@ -432,7 +455,18 @@ def verdict_is_snapshot_fresh_green(
         return False
     if verdict.get("result") != "GREEN":
         return False
-    if float(verdict.get("ts", 0) or 0) < float(last_dispatch_ts or 0):
+    if not isinstance(session_id, str) or verdict.get("session_id") != session_id:
+        return False
+    if type(dispatch_generation) is not int or dispatch_generation < 0:
+        return False
+    if verdict.get("dispatch_generation") != dispatch_generation:
+        return False
+    try:
+        verdict_ts = float(verdict.get("ts", 0) or 0)
+        dispatch_ts = float(last_dispatch_ts or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not math.isfinite(verdict_ts) or not math.isfinite(dispatch_ts):
         return False
     if verdict.get("unsafe") is True:
         return False
@@ -515,7 +549,39 @@ def run_gate(
     never close a hardened Stop gate.
     """
     cwd = str(Path(cwd).resolve())
+    verification_id = f"verify-{os.getpid()}-{time.time_ns()}"
+    start_state = fc.mark_verification_started(
+        session_id,
+        verification_id,
+        Path(cwd, "verdict.json"),
+    )
+    try:
+        return _run_active_gate(
+            gate,
+            session_id=session_id,
+            cwd=cwd,
+            legacy_shell=legacy_shell,
+            verification_id=verification_id,
+            start_state=start_state,
+        )
+    finally:
+        fc.abandon_verification(session_id, verification_id)
+
+
+def _run_active_gate(
+    gate: str,
+    session_id: str,
+    cwd: str,
+    *,
+    legacy_shell: bool,
+    verification_id: str,
+    start_state: dict,
+) -> dict:
+    cwd = str(Path(cwd).resolve())
     gate = gate if isinstance(gate, str) else str(gate)
+    start_state_revision = start_state.get("state_revision", 0)
+    verified_generation = start_state.get("dispatch_generation", 0)
+    started_with_active_dispatch = bool(start_state.get("active_dispatches"))
 
     unsafe = bool(legacy_shell)
     unsafe_reason = "legacy_shell=True (shell=True compatibility path)" if unsafe else ""
@@ -533,31 +599,37 @@ def run_gate(
             gate_argv = []
             identity_argv = []
             exit_code, stdout, stderr = 127, "", "empty or unparseable gate command"
-            pre = capture_workspace_snapshot(
-                cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
-            )
-            final = capture_workspace_snapshot(
-                cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
-            )
-            return _finalize_verdict(
-                gate=gate,
-                gate_argv=gate_argv,
-                gate_mode=gate_mode,
-                unsafe=False,
-                unsafe_reason="",
-                exit_code=exit_code,
-                stdout=stdout,
-                stderr=stderr,
-                session_id=session_id,
-                cwd=cwd,
-                pre=pre,
-                final=final,
-            )
+            with fc.advisory_lock(fc.config_lock_path(fc.GLOBAL_CONFIG)):
+                pre = capture_workspace_snapshot(
+                    cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
+                )
+                final = capture_workspace_snapshot(
+                    cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
+                )
+                return _finalize_verdict(
+                    gate=gate,
+                    gate_argv=gate_argv,
+                    gate_mode=gate_mode,
+                    unsafe=False,
+                    unsafe_reason="",
+                    exit_code=exit_code,
+                    stdout=stdout,
+                    stderr=stderr,
+                    session_id=session_id,
+                    cwd=cwd,
+                    pre=pre,
+                    final=final,
+                    verified_generation=verified_generation,
+                    started_with_active_dispatch=started_with_active_dispatch,
+                    expected_state_revision=start_state_revision,
+                    verification_id=verification_id,
+                )
         identity_argv = list(gate_argv)
 
-    pre = capture_workspace_snapshot(
-        cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
-    )
+    with fc.advisory_lock(fc.config_lock_path(fc.GLOBAL_CONFIG)):
+        pre = capture_workspace_snapshot(
+            cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
+        )
 
     if unsafe:
         exit_code, stdout, stderr = _run_gate_legacy_shell(gate, cwd)
@@ -565,24 +637,29 @@ def run_gate(
         assert gate_argv is not None
         exit_code, stdout, stderr = _run_gate_argv(gate_argv, cwd)
 
-    final = capture_workspace_snapshot(
-        cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
-    )
+    with fc.advisory_lock(fc.config_lock_path(fc.GLOBAL_CONFIG)):
+        final = capture_workspace_snapshot(
+            cwd, session_id=session_id, gate_argv=identity_argv, gate_mode=gate_mode
+        )
 
-    return _finalize_verdict(
-        gate=gate,
-        gate_argv=gate_argv if gate_argv is not None else identity_argv,
-        gate_mode=gate_mode,
-        unsafe=unsafe,
-        unsafe_reason=unsafe_reason,
-        exit_code=exit_code,
-        stdout=stdout,
-        stderr=stderr,
-        session_id=session_id,
-        cwd=cwd,
-        pre=pre,
-        final=final,
-    )
+        return _finalize_verdict(
+            gate=gate,
+            gate_argv=gate_argv if gate_argv is not None else identity_argv,
+            gate_mode=gate_mode,
+            unsafe=unsafe,
+            unsafe_reason=unsafe_reason,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            session_id=session_id,
+            cwd=cwd,
+            pre=pre,
+            final=final,
+            verified_generation=verified_generation,
+            started_with_active_dispatch=started_with_active_dispatch,
+            expected_state_revision=start_state_revision,
+            verification_id=verification_id,
+        )
 
 
 def _finalize_verdict(
@@ -599,6 +676,10 @@ def _finalize_verdict(
     cwd: str,
     pre: dict[str, Any],
     final: dict[str, Any],
+    verified_generation: int,
+    started_with_active_dispatch: bool,
+    expected_state_revision: int,
+    verification_id: str,
 ) -> dict:
     stable = snapshots_equal(pre, final)
     workspace_supported = (
@@ -607,15 +688,29 @@ def _finalize_verdict(
         and pre.get("snapshot_complete") is True
         and final.get("snapshot_complete") is True
     )
-    # GREEN requires exit zero AND a stable verified snapshot after the gate.
+    state = fc.read_state(session_id)
+    after = float(state.get("last_dispatch_ts", 0.0))
+    generation_unchanged = state.get("dispatch_generation") == verified_generation
+    state_unchanged = state.get("state_revision", 0) == expected_state_revision
+    no_active_dispatch = not started_with_active_dispatch and not state.get("active_dispatches")
+    sole_verifier = state.get("active_verifications") == [verification_id]
+
+    # GREEN requires exit zero, a stable verified snapshot, and no overlapping dispatch generation.
     # Unsafe legacy-shell runs may still stamp result=GREEN when exit==0 and stable, but they
     # carry unsafe=True so the hardened Stop gate always rejects them.
-    if int(exit_code) == 0 and stable and workspace_supported:
+    if (
+        int(exit_code) == 0
+        and stable
+        and workspace_supported
+        and generation_unchanged
+        and state_unchanged
+        and no_active_dispatch
+        and sole_verifier
+    ):
         result = "GREEN"
     else:
         result = "RED"
 
-    after = float(fc.read_state(session_id).get("last_dispatch_ts", 0.0))
     # Preserve legacy keys via make_verdict then overlay snapshot-bound fields / corrected result.
     base = fc.make_verdict(
         gate,
@@ -628,6 +723,9 @@ def _finalize_verdict(
     verdict = dict(base)
     verdict["result"] = result
     verdict["schema_version"] = VERDICT_SCHEMA_VERSION
+    verdict["dispatch_generation"] = verified_generation
+    verdict["verification_id"] = verification_id
+    verdict["session_id"] = session_id
     verdict["gate_argv"] = list(gate_argv or [])
     verdict["gate_mode"] = gate_mode
     verdict["unsafe"] = bool(unsafe)
@@ -642,14 +740,24 @@ def _finalize_verdict(
     verdict["stdout_tail"] = (stdout or "")[-2000:]
     verdict["stderr_tail"] = (stderr or "")[-1000:]
 
-    verdict_path = Path(cwd, "verdict.json")
-    _write_owner_only(
-        verdict_path,
-        json.dumps(verdict, indent=2, sort_keys=True) + "\n",
+    state_verdict = _state_verdict_for_persistence(verdict)
+    artifact_verdict = fc.compact_verdict_receipt(verdict)
+    persisted, _current = fc.finish_verification(
+        session_id,
+        verification_id,
+        expected_state_revision,
+        verified_generation,
+        state_verdict,
+        Path(cwd, "verdict.json"),
+        artifact_verdict,
     )
-
-    state_verdict = {k: verdict[k] for k in _STATE_VERDICT_KEYS if k in verdict}
-    fc.write_state(session_id, verdict=state_verdict)
+    if not persisted:
+        verdict["result"] = "RED"
+        verdict["verified_snapshot"] = None
+        concurrency_error = "session state changed before verdict persistence"
+        verdict["stderr_tail"] = "\n".join(
+            part for part in (verdict["stderr_tail"], concurrency_error) if part
+        )[-1000:]
     return verdict
 
 
