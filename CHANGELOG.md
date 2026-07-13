@@ -8,6 +8,13 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.5] - 2026-07-13
+
+### Added
+- Added support for `--executor-model` as the primary executor model flag while retaining `--model` as a legacy alias.
+- Updated CLI contract tests and configuration prompts/docs to keep frontier provider/model, executor provider/model, and profile separate.
+- Added conflict handling for passing both `--model` and `--executor-model`.
+
 ## [0.3.4] - 2026-07-12
 
 ### Fixed

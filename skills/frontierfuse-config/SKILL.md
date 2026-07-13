@@ -81,7 +81,7 @@ one question.
      --frontier-provider <codex|claude|grok|gemini> \
      --frontier-model <model-id> \
      --executor <codex|claude|grok|gemini> \
-     --model <model-id-or-empty> \
+     --executor-model <model-id-or-empty> \
      [--effort <low|medium|high|xhigh>] --fast <on|off> \
      --update-mode <passive|manual|off> [--global]
    ```
@@ -90,7 +90,7 @@ one question.
    `frontier-dispatch` call; it does not change a body already running."
 
    If the user wants Codex fast mode to follow the regular Codex model again, run a separate reset
-   without `--model`:
+   without `--model` or `--executor-model`:
 
    ```bash
    python3 "$CLAUDE_PLUGIN_ROOT/frontier_dispatch.py" config --inherit-fast-model [--global]
@@ -112,7 +112,9 @@ Configuration never enables elevated permissions. These remain explicit host env
   built-in default.
 - `xhigh` effort is valid for Codex/fast lanes; Grok effort remains low, medium, or high.
 - `--inherit-fast-model` clears only the Codex fast-model override; it cannot be combined with
-  `--model` in the same command.
+  `--model` or `--executor-model` in the same command.
+
+  `--model` remains available as a legacy alias for `--executor-model`.
 - Config changes do not alter verdicts, arm/disarm state, the frozen gate, or hook behavior.
 - Explicit repair preserves the malformed original in a timestamped owner-only backup.
 - A config change after arming changes the snapshot hash. Re-run verification before closing.

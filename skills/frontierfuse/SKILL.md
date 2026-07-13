@@ -71,26 +71,28 @@ Apply profile, frontier, and executor choices independently:
 frontier-dispatch config \
   --profile advisor \
   --frontier-provider claude --frontier-model claude-fable-5 \
-  --executor codex --model ""
+  --executor codex --executor-model ""
 ```
 
 Examples:
 
 ```bash
 # Sonnet executor with Fable as frontier advisor
-frontier-dispatch config --executor claude --model claude-sonnet-5 \
+frontier-dispatch config --executor claude --executor-model claude-sonnet-5 \
   --frontier-provider claude --frontier-model claude-fable-5
 
 # Opus executor with GPT-5.6 Sol as frontier advisor
-frontier-dispatch config --executor claude --model claude-opus-4-8 \
+frontier-dispatch config --executor claude --executor-model claude-opus-4-8 \
   --frontier-provider codex --frontier-model gpt-5.6-sol
 
 # Grok executor with GPT-5.6 Terra as frontier advisor
-frontier-dispatch config --executor grok --model grok-4.5 \
+frontier-dispatch config --executor grok --executor-model grok-4.5 \
   --frontier-provider codex --frontier-model gpt-5.6-terra
 
 # Gemini executor
-frontier-dispatch config --executor gemini --model gemini-3.5-flash
+frontier-dispatch config --executor gemini --executor-model gemini-3.5-flash
+
+`--model` remains available as a legacy alias for the executor model.
 ```
 
 ## Advisor Profile

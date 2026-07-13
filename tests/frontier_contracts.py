@@ -581,6 +581,17 @@ def test_dispatch_separates_profile_frontier_and_executor_models() -> None:
         assert cfg["claude_model"] == "claude-opus-4-8"
 
         proc = _run_dispatch(
+            [
+                "config", "--executor", "codex", "--executor-model", "",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"config with executor-model failed: {proc.stdout!r} {proc.stderr!r}"
+        cfg = json.loads(proc.stdout)
+        assert cfg["executor"] == "codex"
+        assert cfg["codex_model"] == ""
+
+        proc = _run_dispatch(
             ["--dry-run", "--executor", "claude", "--model", "claude-opus-4-8", "execute with Claude"],
             extra_env={"FRONTIER_SESSION_ID": sid},
         )
@@ -589,6 +600,34 @@ def test_dispatch_separates_profile_frontier_and_executor_models() -> None:
         assert payload["mode"]["executor"] == "claude"
         assert payload["mode"]["claude_model"] == "claude-opus-4-8"
         assert "claude -p --model claude-opus-4-8" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            [
+                "--dry-run",
+                "--executor", "claude",
+                "--executor-model", "claude-sonnet-5",
+                "execute with explicit executor model flag",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, f"executor-model dry-run failed: {proc.stdout!r} {proc.stderr!r}"
+        payload = json.loads(proc.stdout)
+        assert payload["mode"]["executor"] == "claude"
+        assert payload["mode"]["claude_model"] == "claude-sonnet-5"
+        assert "claude -p --model claude-sonnet-5" in payload["cards"][0]["summary"]
+
+        proc = _run_dispatch(
+            [
+                "--dry-run",
+                "--executor", "codex",
+                "--model", "codex-model-legacy",
+                "--executor-model", "codex-model-dual",
+                "reject dual model args",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode != 0
+        assert "legacy" in (proc.stderr or "").lower() or "either" in (proc.stderr or "").lower()
     finally:
         fc.clear_state(sid)
 

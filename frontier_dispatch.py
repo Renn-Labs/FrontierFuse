@@ -13,7 +13,7 @@ Subcommands:
   disarm | done                explicitly override, or close on snapshot-bound GREEN
   verify                       run the frozen gate while armed -> verdict.json
   config [--profile advisor|orchestrator --frontier-provider PROVIDER --frontier-model MODEL
-          --executor PROVIDER --model MODEL --effort --fast on|off --global]
+          --executor PROVIDER --executor-model MODEL --effort --fast on|off --global]
                                 print/persist toggles
   models [--provider PROVIDER]  verified catalog plus local CLI discoveries
   doctor [--check-updates]     offline readiness table; opt in to a cached release check
@@ -58,6 +58,13 @@ _EXECUTOR_MODEL_KEYS = {
 # dispatch — run selected bodies
 # --------------------------------------------------------------------------- #
 def _overrides(args) -> dict:
+    def _executor_model(args_obj) -> str | None:
+        legacy_model = getattr(args_obj, "model", None)
+        explicit_model = getattr(args_obj, "executor_model", None)
+        if legacy_model is not None and explicit_model is not None:
+            raise ValueError("use either --model (legacy) or --executor-model, not both")
+        return explicit_model if explicit_model is not None else legacy_model
+
     ov: dict = {}
     if args.fast:
         ov["fast"] = (args.fast == "on")
@@ -76,9 +83,10 @@ def _overrides(args) -> dict:
         raise ValueError(
             f"unknown executor {executor!r}; expected one of {sorted(fc.KNOWN_EXECUTORS)}"
         )
-    if args.model is not None:
+    selected_model = _executor_model(args)
+    if selected_model is not None:
         model_key = "fast_model" if fast and executor == "codex" else _EXECUTOR_MODEL_KEYS[executor]
-        ov[model_key] = args.model
+        ov[model_key] = selected_model
     if args.effort:
         if executor not in {"codex", "grok"}:
             raise ValueError(f"--effort is not supported by the {executor} executor")
@@ -340,9 +348,9 @@ def cmd_config(args) -> int:
             print(f"repair not needed: {target}", file=sys.stderr)
     patch: dict = {}
     inherit_fast_model = getattr(args, "inherit_fast_model", False)
-    if inherit_fast_model and args.model is not None:
+    if inherit_fast_model and (args.model is not None or args.executor_model is not None):
         print(
-            "config refused: --inherit-fast-model cannot be combined with --model",
+            "config refused: --inherit-fast-model cannot be combined with --model/--executor-model",
             file=sys.stderr,
         )
         return 2
@@ -393,12 +401,21 @@ def cmd_config(args) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.model is not None:
+    if args.model is not None and getattr(args, "executor_model", None) is not None:
+        print(
+            "config refused: use either --model (legacy) or --executor-model, not both",
+            file=sys.stderr,
+        )
+        return 2
+    legacy_model = getattr(args, "model", None)
+    explicit_model = getattr(args, "executor_model", None)
+    if legacy_model is not None or explicit_model is not None:
+        selected_model = explicit_model if explicit_model is not None else legacy_model
         model_key = (
             "fast_model" if fast and executor == "codex"
             else _EXECUTOR_MODEL_KEYS[executor]
         )
-        patch[model_key] = args.model
+        patch[model_key] = selected_model
     if args.effort is not None:
         if executor not in {"codex", "grok"}:
             print(
@@ -959,7 +976,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dry-run", action="store_true", help="build the command; make no engine call")
     ap.add_argument("--budget-usd", type=float, default=0.0, help="informational soft budget note")
     ap.add_argument("--timeout", type=int, default=BODY_TIMEOUT, help="per-body timeout seconds")
-    ap.add_argument("--model", default=None, help="selected executor model; empty uses provider default")
+    ap.add_argument("--model", default=None, help="selected executor model; empty uses provider default [legacy]")
+    ap.add_argument("--executor-model", default=None,
+                    help="selected executor model; empty uses provider default")
     ap.add_argument("--inherit-fast-model", action="store_true",
                     help="config: clear fast-model pin so it inherits the regular Codex model")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh"], default=None)

@@ -4,7 +4,7 @@ Pair a selectable frontier model with a separate coding executor. FrontierFuse s
 Claude, Grok, and Gemini providers in executor-led `advisor` and frontier-led `orchestrator`
 profiles. Fable 5 is the recommended Claude frontier model, not the only brain.
 
-Current version: **0.3.4**
+Current version: **0.3.5**
 
 ## Copy This Into Your Coding Harness
 
@@ -126,11 +126,13 @@ Target result:
      --frontier-provider <codex|claude|grok|gemini> \
      --frontier-model <exact-model-id> \
      --executor <codex|claude|grok|gemini> \
-     --model <exact-model-id-or-empty> \
+     --executor-model <exact-model-id-or-empty> \
      [--effort <low|medium|high|xhigh>] \
      --fast <on|off> \
      --update-mode <passive|manual|off> \
      [--global]
+
+   `--model` still works as a legacy alias for `--executor-model`.
 
 9. Run `frontier-dispatch config` and `frontier-dispatch doctor` again. Report the effective
    profile, frontier provider/model, executor provider/model, readiness, and any exact missing CLI
