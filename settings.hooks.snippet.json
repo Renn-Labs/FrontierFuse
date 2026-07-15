@@ -1,5 +1,5 @@
 {
-  "//": "FrontierFuse workflow guardrail for Claude Code. `python3 frontier_dispatch.py install-hooks` merges these into ~/.claude/settings.json automatically (replacing <REPO> with the repo's absolute path) and makes a .json.bak backup. Shown here for reference / manual install. Inert until `frontier-dispatch arm --gate \"…\"` freezes verifier argv/cwd; snapshot-bound Stop verification is not a sandbox. Kill-switch FRONTIER_GUARDS_OFF=1.",
+  "//": "FrontierFuse Option B workflow guardrail for Claude Code (manual install-hooks path). `python3 frontier_dispatch.py install-hooks` merges these into ~/.claude/settings.json automatically (replacing <REPO> with the repo's absolute path) and makes a .json.bak backup. Shown here for reference / manual install. Fully restart Claude Code after install/uninstall so hooks load. Inert until `frontier-dispatch arm --gate \"…\"` freezes verifier argv/cwd; snapshot-bound Stop verification is a host-bound workflow guardrail, not a sandbox. Kill-switch FRONTIER_GUARDS_OFF=1 (or CLAUDE_GUARDS_OFF=1).",
   "hooks": {
     "PreToolUse": [
       {

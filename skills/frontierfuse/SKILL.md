@@ -2,24 +2,36 @@
 name: frontierfuse
 description: >
   FrontierFuse pairs a selectable frontier model with a separate Codex, Claude, Grok, or Gemini
-  executor. Supports executor-led advisor mode and frontier-led orchestrator mode with a frozen,
+  executor. Supports executor-led advisor mode and host-led orchestrator mode with a frozen,
   snapshot-bound verifier. Use on /frontierfuse, "frontierfuse", or "frontier fuse".
 ---
 
 # FrontierFuse
 
-FrontierFuse separates three choices:
+FrontierFuse separates independent decisions. Ask them one at a time; never combine profile with
+provider/model selection:
 
-1. **Profile**: who drives the loop.
-2. **Frontier provider/model**: who supplies frontier reasoning or advice.
-3. **Executor provider/model**: who performs implementation and tool work.
+1. **Profile / workflow**: who drives the loop.
+2. **Frontier provider**: which provider supplies frontier reasoning or advice.
+3. **Frontier model**: exact model ID for that provider.
+4. **Executor provider**: which provider performs implementation and tool work.
+5. **Executor model**: exact model ID (Codex may stay empty for account default).
+6. **Effort** (Codex/Grok only), **fast mode**, **update mode**.
+
+**Providers are not models.** Sonnet, Opus, and Fable are Claude models, not providers. Never invent
+model IDs; use `frontier-dispatch models` and accept only exact IDs the provider CLI can verify.
 
 Fable 5 is the recommended Claude frontier model and remains part of the product story, but it is
 not hard-wired. GPT-5.6 Sol/Terra/Luna, Claude, Grok, and Gemini models can occupy either supported
 role when the relevant CLI and account expose the exact model ID.
 
-The host harness owns the model already driving its conversation. FrontierFuse cannot hot-swap that
-host model; it configures managed frontier and executor calls plus the role contract.
+## Host-bound limitation
+
+The host harness owns the model already driving its conversation. A plugin **cannot hot-swap** that
+host model. FrontierFuse configures **managed** frontier consults and executor bodies plus the role
+contract. Until a managed controller process exists, orchestrator planning remains host-owned; the
+configured frontier is managed consult capacity, not an automatic host replacement. Hooks are a
+workflow guardrail, not an OS sandbox.
 
 Before selecting a profile or arming, run the quiet cached update reminder once:
 
@@ -35,26 +47,72 @@ Lead replies during an active FrontierFuse loop with:
 LOOP - frontierfuse - <advisor|orchestrator> - <short goal> - verifier: GREEN|RED|-
 ```
 
-## Choose The Profile
+## Three Practical Working Patterns
 
-| Profile | Driver | Frontier role | Executor role | Typical token impact |
-|---|---|---|---|---|
-| `advisor` (default) | Executor | Consulted only when needed | Plans, edits, and uses tools | Lower frontier usage |
-| `orchestrator` | Current host/frontier controller | Plans, routes, reviews, synthesizes | Runs dispatched work bodies | Higher frontier usage; stronger coordination |
+### 1. Host / executor-led advisor (default)
 
 ```text
-advisor:      user -> executor -> frontier advice (as needed) -> executor -> verifier
-orchestrator: user -> frontier orchestrator -> executor bodies -> synthesis -> verifier
+user
+  -> host executor (plans, edits, tools)
+       -> managed frontier advice (only when needed)
+  -> host executor continues
+  -> tests / review
 ```
 
-Default to `advisor` unless the user explicitly requests orchestrator behavior or guarded delegation.
-Do not combine the profile question with executor selection. `/frontierfuse-config` asks profile,
-frontier model, executor provider, and executor model separately.
+Lowest frontier-token use and coordination cost. No arm/disarm loop.
+
+### 2. Host-led verified orchestration (managed executor bodies)
+
+```text
+user
+  -> host controller (plans, reviews, synthesizes)
+       -> frontier-dispatch arm --gate "…"
+       -> frontier-dispatch (managed executor bodies)
+       -> host reviews raw handoff / diff
+       -> frontier-dispatch verify
+       -> frontier-dispatch done   # only after fresh GREEN
+```
+
+Higher latency/coordination. Claude Code hooks (marketplace or Option B) guard the armed loop only
+on that host surface.
+
+### 3. Premium host + deep frontier advisor + cheaper executor bodies (pattern, not a profile)
+
+```text
+user
+  -> premium host model (harness-selected; plugin cannot swap it)
+       -> managed deep frontier consults (ask_frontier / ask-frontier)
+       -> cheaper managed executor bodies (frontier-dispatch)
+  -> host integrates evidence
+  -> real tests / frozen verify when orchestrating
+```
+
+This is not a third `profile` value. Select `advisor` first for occasional managed consults, or
+select `orchestrator` when the same pattern also needs guarded body dispatch and frozen verification.
+Use it when judgment stays on a strong host model, deep advice is occasional, and bulk coding can use
+a cheaper executor.
+
+### Comparison
+
+| Working pattern | Frontier-token use | Latency / coordination | Choose when |
+|-|-|-|-|
+| Advisor | Low (on-demand consults) | Lowest | Default coding loop |
+| Host orchestrator | Medium–high | Higher (arm/dispatch/verify) | Multi-step work needing GREEN receipts |
+| Premium host + deep frontier + cheap bodies | Higher if consults are frequent; body cost can stay low | Highest setup care | Hard judgment + cost control on implementation |
+
+| Profile | Driver | Frontier role | Executor role |
+|-|-|-|-|
+| `advisor` (default) | Host executor | Consulted only when needed | Plans, edits, tools |
+| `orchestrator` | Current host controller | Managed consult capacity (not a host swap) | Dispatched work bodies |
+
+Default to `advisor` unless the user explicitly requests orchestrator behavior or guarded
+delegation. `/frontierfuse-config` asks profile, frontier provider/model, and executor
+provider/model separately.
 
 ## Select Models
 
-Providers are `codex`, `claude`, `grok`, and `gemini`. Sonnet and Opus are Claude model choices,
-not provider names. List the source-backed catalog and locally discovered models before asking:
+Providers are `codex`, `claude`, `grok`, and `gemini`. List the source-backed catalog and locally
+discovered models before asking:
 
 ```bash
 frontier-dispatch models
@@ -62,8 +120,9 @@ frontier-dispatch models --provider claude
 frontier-dispatch models --provider grok --json
 ```
 
-The catalog includes current and useful previous releases. A custom exact ID is allowed for
-account-specific availability; validate it with the provider CLI instead of guessing.
+Catalog membership and local discovery are **availability-oriented suggestions only** — not proof
+of authentication, billing, or model entitlement. A custom exact ID is allowed for account-specific
+availability; validate it with the provider CLI instead of guessing.
 
 Apply profile, frontier, and executor choices independently:
 
@@ -91,9 +150,9 @@ frontier-dispatch config --executor grok --executor-model grok-4.5 \
 
 # Gemini executor
 frontier-dispatch config --executor gemini --executor-model gemini-3.5-flash
-
-`--model` remains available as a legacy alias for the executor model.
 ```
+
+`--model` remains available as a legacy alias for `--executor-model`. Do not pass both.
 
 ## Advisor Profile
 
@@ -115,7 +174,7 @@ Rules:
 
 ## Orchestrator Profile
 
-The current host/frontier controller plans and reviews; the selected executor runs bodies. Claude
+The current host controller plans and reviews; the selected executor runs managed bodies. Claude
 Code hooks provide a workflow guardrail while armed. They are not a sandbox and do not constrain an
 unhooked shell or other hosts.
 
@@ -185,13 +244,31 @@ commit `runs/`, `verdict.json`, provider transcripts, or local state.
 
 ```bash
 frontier-dispatch config                     # effective settings
-frontier-dispatch doctor                     # offline readiness
+frontier-dispatch doctor                     # offline readiness (no network)
 frontier-dispatch doctor --json              # typed readiness and recovery actions
 frontier-dispatch config --repair --global   # backed-up malformed-config recovery
 frontier-dispatch config --repair            # backed-up current-session recovery
 frontier-dispatch doctor --check-updates     # readiness plus explicit release check
-frontier-dispatch update --check             # cached release check
+frontier-dispatch update --check             # cached release check only
 ```
+
+**Doctor is offline by default** and does not create an update cache. Exit codes:
+
+| Code | Meaning |
+|-|-|
+| `0` | READY — blocking body + frontier CLIs present; optional hooks/release rows may still show gaps |
+| `1` | NOT READY — missing blocking CLI, unusable lock, unwritable state, etc. |
+| `2` | CONFIG_INVALID or invalid session id — repair/fix identity before continuing |
+
+CLI presence is not authentication, billing, entitlement, or live compatibility proof.
+`doctor --check-updates` is the only doctor network path; `update --check` is the standalone
+release-metadata path. Passive reminders use an owner-only seven-day cache, stay silent when current
+or offline, and never install automatically.
+
+Exit `0` means only local CLI/state readiness. It does not mean every configuration choice has been
+made or that a selected model is authorized.
+
+After MCP or hook install/update, reload/restart the host harness so the new surface loads.
 
 Configuration precedence: per-call flag > session config >
 `~/.config/frontier-fuse/config.json` > environment > built-in defaults. Changes apply to the next

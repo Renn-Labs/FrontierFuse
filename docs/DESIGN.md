@@ -1,11 +1,13 @@
-# FrontierFuse Architecture (0.3.2)
+# FrontierFuse Architecture (0.3.5)
 
-This document describes the shipped Claude Code plugin. The roadmap is in
-`docs/FRONTIERFUSE_EXECUTION_PLAN.md`.
+This document describes the shipped Claude Code plugin and shared checkout surface. The roadmap is
+in `docs/FRONTIERFUSE_EXECUTION_PLAN.md`. Baseline **0.3.5** includes provider-neutral roles, offline
+doctor, quiet updates, reliable configuration, Gemini executor support, and `--executor-model` as
+the primary executor pin (with `--model` as legacy alias).
 
 ## Product Contract
 
-FrontierFuse separates profile, frontier model, and executor model:
+FrontierFuse separates profile, frontier, and executor as independent decisions:
 
 | Decision | Values | Default |
 |-|-|-|
@@ -13,28 +15,51 @@ FrontierFuse separates profile, frontier model, and executor model:
 | Frontier provider | `codex`, `claude`, `grok`, `gemini` | `claude` |
 | Frontier model | provider model ID | `claude-fable-5` |
 | Executor provider | `codex`, `claude`, `grok`, `gemini` | `codex` |
-| Executor model | provider model ID | Codex account default |
+| Executor model | provider model ID | Codex account default (empty pin) |
+| Effort | Codex/Grok: `low`/`medium`/`high` (+ Codex `xhigh`) | provider default / high lane |
+| Update mode | `passive`, `manual`, `off` | `passive` |
 
-The host harness owns the model already driving its conversation. FrontierFuse does not replace
-that model. It configures managed provider calls and the role contract.
+**Providers are not models.** Sonnet, Opus, and Fable are Claude model IDs, not provider names.
 
-### Advisor
+The host harness owns the model already driving its conversation. FrontierFuse does **not** replace
+that model and cannot hot-swap it. It configures managed provider calls and the role contract. Until
+a managed controller process exists, orchestrator planning remains host-owned; the configured
+frontier is managed consult capacity.
+
+### Practical workflows
+
+#### 1. Host / executor-led advisor
 
 ```text
 user -> executor -> frontier advice (on demand) -> executor -> tests
 ```
 
 The executor plans, edits, and uses tools. `ask_frontier` calls the configured frontier model only
-for decision support. No arm/disarm flow is used.
+for decision support. No arm/disarm flow. Lowest frontier-token use and coordination overhead.
 
-### Orchestrator
+#### 2. Host-led verified orchestration (managed executor bodies)
 
 ```text
-user -> current host/frontier controller -> executor bodies -> synthesis -> frozen verifier
+user -> current host controller -> managed executor bodies -> host synthesis -> frozen verifier
 ```
 
-The controller plans, dispatches, reviews raw evidence, and synthesizes. The executor runs bounded
-work bodies. Claude Code hooks act as a workflow guardrail while armed; they are not a sandbox.
+The host plans, dispatches via `frontier-dispatch`, reviews raw evidence, and synthesizes. The
+executor runs bounded work bodies. Claude Code hooks act as a workflow guardrail while armed; they
+are not a sandbox. Higher coordination cost; use when snapshot-bound GREEN matters.
+
+#### 3. Premium host lead + deep frontier advisor + cheaper executor bodies (pattern, not a profile)
+
+```text
+user -> premium host model (harness-selected)
+         -> managed deep frontier consults
+         -> cheaper managed executor bodies
+      -> host integrates + tests / verify
+```
+
+This is not a third profile value: choose `advisor` for occasional managed consults, or choose
+`orchestrator` when it also needs guarded body dispatch and frozen verification. Judgment stays on a
+strong host model; deep advice is occasional; bulk implementation can use a cheaper executor. Still
+host-bound: the plugin cannot swap the harness model.
 
 ## Modules
 
@@ -69,9 +94,10 @@ The shipped modules are stdlib-only and support Python 3.10+.
 remain available through `FRONTIER_ADVISOR_CMD`, `FRONTIER_BODY_CMD`, and provider-specific
 `FRONTIER_*_CMD` variables.
 
-Provider and model are different types. Sonnet and Opus are Claude models, not provider values.
 Model IDs in `frontier_models.py` must be verified against official provider documentation. Local
 discovery can add account-visible IDs at runtime without claiming them as static public releases.
+Catalog status fields (`recommended`, `current`, `previous`, …) are availability-oriented
+suggestions only — not authentication or entitlement probes.
 
 ## Frozen Verifier
 
@@ -114,7 +140,8 @@ Grok mode.
 
 Cross-provider prompts leave the machine. Local config, state, prompt files, cache, artifacts, and
 handoff cards are written owner-only by FrontierFuse. Generated runs, verdicts, provider logs,
-credentials, and private paths are never release artifacts.
+credentials, and private paths are never release artifacts. Ordinary doctor and passive update
+checks send no machine or project telemetry.
 
 ## Configuration Reliability
 
@@ -162,17 +189,46 @@ Configuration commands validate the prospective effective defaults/environment/g
 composition before writing any layer, preventing individually valid files from creating an unusable
 cross-layer combination.
 
+### Doctor exit codes
+
+| Code | Meaning |
+|-|-|
+| `0` | READY — blocking body + frontier CLIs present and global lock usable |
+| `1` | NOT READY — missing blocking prerequisite, unusable lock, unwritable state, etc. |
+| `2` | CONFIG_INVALID or invalid session identifier |
+
+CLI presence never claims authentication or model entitlement. Use `doctor --check-updates` or
+`update --check` only when an explicit release-metadata network path is desired.
+
 ## Packaging And Lifecycle
 
 Claude Code uses `.claude-plugin/plugin.json`, the self-referential marketplace manifest,
-conventional hook loading, and skill discovery. Codex and Grok use a stable checkout plus stdio MCP
-registration in 0.3.2; separate marketplace packages are not claimed.
+conventional hook loading, and skill discovery. Manual `install-hooks` / `uninstall-hooks` (Option B)
+remains the fallback for environments without marketplace access.
+
+Codex, Grok Build, and Gemini CLI use a stable shared checkout plus stdio MCP registration. Separate
+native marketplace packages for those harnesses are **not** claimed.
+
+Verified MCP registration / removal (after setting `FRONTIERFUSE_HOME`):
+
+```bash
+codex mcp add frontier-advisor -- python3 "$FRONTIERFUSE_HOME/frontier_advisor_mcp.py"
+codex mcp remove frontier-advisor
+
+grok mcp add frontier-advisor -- python3 "$FRONTIERFUSE_HOME/frontier_advisor_mcp.py"
+grok mcp remove frontier-advisor
+
+gemini mcp add frontier-advisor python3 "$FRONTIERFUSE_HOME/frontier_advisor_mcp.py"
+gemini mcp remove frontier-advisor
+```
+
+Restart the host session after MCP or hook changes so the new registration loads.
 
 Doctor is offline by default. Passive update reminders use an owner-only seven-day cache, send no
 machine or project data, and never mutate an installation.
 
-Version changes must stay synchronized across plugin/marketplace manifests,
-`frontier_advisor_mcp.py`, `frontier_update.py`, changelog, README, and skills.
+Version changes must stay synchronized across the four version carriers — plugin/marketplace
+manifests, `frontier_advisor_mcp.py`, and `frontier_update.py` — plus changelog, README, and skills.
 
 ## Verification
 

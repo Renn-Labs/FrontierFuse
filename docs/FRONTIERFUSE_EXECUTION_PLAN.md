@@ -1,8 +1,9 @@
 # FrontierFuse Execution Plan
 
-This is the durable implementation backlog after the provider-neutral FrontierFuse `0.3.0`
-release. It converts the independent frontier-model review into sequenced, testable releases. A
-release is complete only when every acceptance gate is backed by fresh evidence.
+This is the durable implementation backlog after the provider-neutral FrontierFuse line. The shipped
+baseline documented here is **0.3.5**. Releases convert independent frontier-model review into
+sequenced, testable work. A release is complete only when every acceptance gate is backed by fresh
+evidence.
 
 ## Product Contract
 
@@ -16,13 +17,17 @@ The product has exactly two roles:
 
 The roles support exactly two profiles:
 
-- `executor-led`: the host executor owns the session and consults the frontier on demand.
-- `controller-led`: the frontier owns delegation and requires deterministic verification.
+- `executor-led` (`advisor`): the host executor owns the session and consults the frontier on demand.
+- `controller-led` (`orchestrator`): the host controller owns delegation and requires deterministic
+  verification. Managed executor bodies run through `frontier-dispatch`.
 
 Role binding must always be explicit:
 
-- `host`: the harness selects and runs the model. A plugin cannot replace it.
-- `managed`: FrontierFuse invokes the selected provider adapter itself.
+- `host`: the harness selects and runs the model. A plugin cannot replace or hot-swap it.
+- `managed`: FrontierFuse invokes the selected provider adapter itself (consults and bodies).
+
+Until a managed controller process ships, orchestrator planning remains host-owned; the configured
+frontier is managed consult capacity, not an automatic host-model replacement.
 
 Deterministic verification is infrastructure, not a third model role. Model advice never makes a
 verdict GREEN.
@@ -46,8 +51,9 @@ Every release must satisfy all applicable gates:
 - [ ] Python 3.10 and 3.12 contract tests pass.
 - [ ] `python3 -m compileall` passes for shipped modules, hooks, and tests.
 - [ ] Claude plugin validation passes.
-- [ ] README install, upgrade, rollback, and compatibility guidance matches the release.
-- [ ] Plugin and marketplace versions match the changelog release.
+- [ ] README install, upgrade, rollback, restart, and compatibility guidance matches the release.
+- [ ] Plugin and marketplace versions match the changelog release (and the MCP + update version
+      carriers).
 - [ ] `scripts/pre-push-check.sh` passes from a clean worktree.
 - [ ] `scripts/public-release-scrub.py --all-history` passes before public exposure and after any
       history rewrite.
@@ -55,11 +61,13 @@ Every release must satisfy all applicable gates:
 - [ ] No generated runs, verdicts, provider transcripts, private state, secrets, or private
       absolute paths are tracked.
 
-## Release 0.2.6 - Trust Boundary Correction
+## Delivered Through 0.3.5
+
+### Release 0.2.6 - Trust Boundary Correction (Delivered)
 
 Goal: make the current control loop materially safer and describe its boundary truthfully.
 
-### Gate and command policy
+#### Gate and command policy
 
 - [x] Replace the broad Bash prefix allowlist with parsed command policy.
 - [x] Deny direct `codex`, `grok`, `claude`, and `gemini` body execution while the controller gate is armed.
@@ -71,7 +79,7 @@ Goal: make the current control loop materially safer and describe its boundary t
 - [x] Add hostile-command tests for shell separators, command substitution, wrappers, aliases,
       quoted paths, path traversal, and misleading prefixes.
 
-### Snapshot-bound verdicts
+#### Snapshot-bound verdicts
 
 - [x] Define a versioned workspace snapshot containing HEAD, index tree, unstaged diff, bounded
       untracked-file hashes, workspace root, effective configuration hash, and gate argv.
@@ -83,7 +91,7 @@ Goal: make the current control loop materially safer and describe its boundary t
       changes.
 - [x] Keep legacy verdicts readable but never let them satisfy the stronger gate.
 
-### Safer execution and artifacts
+#### Safer execution and artifacts
 
 - [x] Default Codex and Grok permission behavior to inherited/provider defaults.
 - [x] Keep bypass/autonomous profiles explicit and opt-in.
@@ -92,7 +100,7 @@ Goal: make the current control loop materially safer and describe its boundary t
 - [x] Keep the legacy shell gate only as an explicitly unsafe compatibility path with a warning.
 - [x] Ensure timeout handling terminates the whole process group.
 
-### Truthful product surface
+#### Truthful product surface
 
 - [x] Replace "hard gate" with "workflow guardrail" for host-hook behavior.
 - [x] Replace "cost-optimal" with "lower coordination overhead."
@@ -100,7 +108,7 @@ Goal: make the current control loop materially safer and describe its boundary t
 - [x] Explain that a host-bound plugin cannot independently replace the host model.
 - [x] Synchronize README, DESIGN, SECURITY, skills, manifests, and agent guidance.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [x] Every bypass identified in the Sol review has a passing regression test.
 - [x] Any post-GREEN workspace mutation causes the Stop hook to reject completion.
@@ -108,18 +116,17 @@ Goal: make the current control loop materially safer and describe its boundary t
 - [x] Default dry-runs omit `--yolo` and `bypassPermissions`.
 - [x] Existing commands and configuration continue to work.
 
-Non-goals: FrontierFuse rebrand, new provider support, managed controller process, new plugin ID.
+Non-goals (this release): FrontierFuse rebrand, new provider support, managed controller process,
+new plugin ID.
 
-## Release 0.3.0 - Installation, Doctor, and Quiet Updates
+### Release 0.3.0 - Installation, Doctor, Quiet Updates, Roles (Delivered)
 
-Goal: make every currently supported harness installable, diagnosable, and update-aware without
-telemetry or background activity.
-
-### Tasks
+Goal: make supported harnesses installable, diagnosable, and update-aware without telemetry, and
+expose provider-neutral roles/profiles.
 
 - [x] Document native Claude marketplace install, update, restart, rollback, and uninstall.
 - [x] Document stable-checkout Codex and Grok MCP registration, update, restart, rollback, and
-      uninstall.
+      uninstall (Gemini uses the same checkout pattern; no native marketplace claimed).
 - [x] Keep `doctor` offline by default and add cached release status to its readiness report.
 - [x] Add an explicit `doctor --check-updates` network path.
 - [x] Add `update --check` with `passive`, `manual`, and `off` modes.
@@ -128,25 +135,20 @@ telemetry or background activity.
       offline.
 - [x] Provide exact manual marketplace and checkout update commands; never update automatically.
 - [x] Keep update requests free of machine identifiers, repository data, prompts, and telemetry.
+- [x] Change public display branding, plugin ID, commands, and repository references to FrontierFuse.
+- [x] Add explicit `profile`, `frontier_provider`, `frontier_model`, executor, and provider model fields.
+- [x] Separate host-model limitations from managed provider calls in docs and skills.
+- [x] Add a source-backed catalog for verified Fable, GPT-5.6, Claude, Grok, and Gemini IDs.
+- [x] Add local Grok model discovery and custom exact model IDs without inventing static releases.
 - [x] Synchronize core update, MCP server, plugin, marketplace, changelog, README, and design
       versions.
 
-### Acceptance evidence
-
-- [x] Offline contracts cover current/newer versions, fresh cache, owner-only permissions, opt-out,
-      network failure, passive silence, and doctor offline behavior.
-- [x] Manual and off modes make zero passive update-network requests.
-- [x] Ordinary doctor readiness remains independent of update availability.
-- [x] Every supported harness has one install and one update path in the README.
-
 Non-goals: daemon, startup ping, machine identifier, automatic update, custom marketplace service,
-Codex/Grok plugin packages.
+Codex/Grok/Gemini plugin packages, managed controller process.
 
-## Release 0.3.2 - Reliable Configuration and Diagnostics (Delivered)
+### Release 0.3.2 - Reliable Configuration and Diagnostics (Delivered)
 
 Goal: make configuration failures recoverable and readiness reports trustworthy.
-
-### Tasks
 
 - [x] Add `schema_version` to global config, session state, handoff cards, and verdicts.
 - [x] Validate every persisted executor, model, effort, profile, fast-mode, and update-mode value.
@@ -163,44 +165,22 @@ Goal: make configuration failures recoverable and readiness reports trustworthy.
 Live auth, model entitlement, CLI compatibility, and probe-failure classification require the
 provider capability contract and remain in `0.4.0`; no default doctor path makes provider calls.
 
-### Acceptance evidence
+### Releases 0.3.3 – 0.3.5 (Delivered maintenance)
 
-- [x] Corrupt, truncated, wrong-type, concurrent, and interrupted writes fail closed or recover
-      through explicit backed-up repair without silent data loss.
-- [x] Every typed doctor failure prints one actionable next step.
-- [x] No startup path rewrites legacy files.
-- [x] Configuration recovery contracts run on Linux and macOS for Python 3.10 and 3.12.
+- [x] **0.3.3** — portable verification contracts (PATH-resolved gate executables across Ubuntu/macOS).
+- [x] **0.3.4** — verification fixture path canonicalization for macOS `/var` aliases and symlinked
+      temp roots.
+- [x] **0.3.5** — `--executor-model` as primary executor pin; `--model` retained as legacy alias;
+      conflict handling when both are passed; docs/contracts keep profile, frontier, and executor
+      decisions separate.
 
-Non-goals: live entitlement checks by default, new marketplaces, rebrand.
+## Planned Releases
 
-## Release 0.3.0 - FrontierFuse Roles and Profiles (Delivered)
-
-Goal: expose provider-neutral product semantics without breaking existing installations.
-
-### Tasks
-
-- [x] Change public display branding, plugin ID, commands, and repository references to FrontierFuse.
-- [x] Add explicit `profile`, `frontier_provider`, `frontier_model`, executor, and provider model fields.
-- [x] Separate host-model limitations from managed provider calls in docs and skills.
-- [x] Add `frontierfuse` commands and skills.
-- [x] Use a single `FRONTIER_*` configuration namespace with documented precedence.
-- [x] Add a source-backed catalog for verified Fable, GPT-5.6, Claude, Grok, and Gemini IDs.
-- [x] Add local Grok model discovery and custom exact model IDs without inventing static releases.
-- [x] Update mode diagrams, onboarding, doctor output, and error messages around ownership.
-
-### Acceptance evidence
-
-- [x] Offline contracts prove provider/model separation and dry-run command construction.
-- [x] The guided walkthrough asks profile, frontier model, executor provider, and executor model separately.
-- [x] Reinstall and restart guidance covers the pre-0.3 identity change.
-
-Non-goals: managed controller process and automatic model routing.
-
-## Release 0.4.0 - Provider Adapter Contract
+### Release 0.4.0 - Provider Adapter Contract (Next tranche)
 
 Goal: make Claude, Codex, Grok, and Gemini execution behavior predictable and capability-aware.
 
-### Tasks
+#### Tasks
 
 - [ ] Define one adapter interface for detection, argv construction, prompt transport, permission
       mapping, timeout, exit normalization, usage reporting, and capability declaration.
@@ -214,7 +194,7 @@ Goal: make Claude, Codex, Grok, and Gemini execution behavior predictable and ca
 - [ ] Require explicit confirmation before sending context to another provider.
 - [ ] Normalize errors without exposing prompt or secret content.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Golden fake-CLI tests cover success, timeout, crash, auth failure, invalid model, oversized
       output, malformed structured output, and interruption.
@@ -223,11 +203,11 @@ Goal: make Claude, Codex, Grok, and Gemini execution behavior predictable and ca
 
 Non-goals: provider SDKs, extra providers, automatic routing, model leaderboard.
 
-## Release 0.5.0 - Verification Receipts and Recovery
+### Release 0.5.0 - Verification Receipts and Recovery
 
 Goal: let users prove exactly what was verified and resume safely after failures.
 
-### Tasks
+#### Tasks
 
 - [ ] Expand the snapshot contract to include component versions, adapters, models, permissions,
       retries, changed paths, artifact hashes, redaction mode, and retention policy.
@@ -239,7 +219,7 @@ Goal: let users prove exactly what was verified and resume safely after failures
 - [ ] Mark usage as provider-reported, estimated, or unavailable.
 - [ ] Add crash-recovery journaling for dispatch and verification transitions.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Any post-GREEN mutation invalidates the receipt.
 - [ ] Injected process interruption never leaves corrupt state.
@@ -248,11 +228,11 @@ Goal: let users prove exactly what was verified and resume safely after failures
 
 Non-goals: cloud storage, telemetry, transcript dashboard, model-based judge.
 
-## Release 0.6.0 - Claude and Codex Packaging
+### Release 0.6.0 - Claude and Codex Packaging
 
 Goal: provide first-class installation for the two harnesses with stable packaging surfaces.
 
-### Tasks
+#### Tasks
 
 - [ ] Extract one versioned core protocol shared by all wrappers.
 - [ ] Keep the Claude Code marketplace package thin and backward compatible.
@@ -263,7 +243,7 @@ Goal: provide first-class installation for the two harnesses with stable packagi
 - [ ] Test clean install, upgrade, rollback, and uninstall independently.
 - [ ] Abort manual installers when harness configuration is malformed.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Every supported OS/harness install, upgrade, and uninstall passes three consecutive times in
       fresh environments.
@@ -272,12 +252,12 @@ Goal: provide first-class installation for the two harnesses with stable packagi
 
 Non-goals: unsupported Codex hooks, Grok pseudo-marketplace, plugin-ID change.
 
-## Release 0.7.0 - Compatibility Metadata and Native Distribution
+### Release 0.7.0 - Compatibility Metadata and Native Distribution
 
 Goal: build on the quiet `0.3.0` reminder with protocol-aware compatibility and native harness
 distribution where official packaging surfaces support it.
 
-### Tasks
+#### Tasks
 
 - [ ] Add core protocol handshake and supported-version ranges.
 - [ ] Extend `update --check` to distinguish compatible, migration-required, and rollback-required
@@ -288,7 +268,7 @@ distribution where official packaging surfaces support it.
 - [ ] Prefer native harness update metadata where it exists.
 - [ ] Add a Grok package only if current official Grok packaging supports the required contract.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Manual and off modes continue to make zero passive update-network requests.
 - [ ] Passive checks do not measurably delay normal startup.
@@ -297,12 +277,12 @@ distribution where official packaging surfaces support it.
 
 Non-goals: daemon, startup ping, machine identifier, automatic update, custom marketplace service.
 
-## Release 0.8.0 - Managed Controller Preview
+### Release 0.8.0 - Managed Controller Preview
 
 Goal: let users independently select the frontier and executor when measurable value justifies the
 additional cost and latency.
 
-### Tasks
+#### Tasks
 
 - [ ] Add experimental `frontier-fuse run` managed loop.
 - [ ] Require managed bindings for independently selected models.
@@ -313,7 +293,7 @@ additional cost and latency.
 - [ ] Prevent uncontrolled recursive delegation and fan-out.
 - [ ] Define a representative benchmark set before evaluating quality.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Run at least 30 representative tasks at matched cost.
 - [ ] Managed mode improves verified completion by at least 10 percentage points or remains
@@ -323,11 +303,11 @@ additional cost and latency.
 
 Non-goals: autonomous workforce, self-routing, hard dollar guarantee, default managed mode.
 
-## Release 0.9.0 - Release Candidate
+### Release 0.9.0 - Release Candidate
 
 Goal: freeze the support contract and prove upgrades before declaring stability.
 
-### Tasks
+#### Tasks
 
 - [ ] Freeze config schema v2 and core protocol v1.
 - [ ] Publish the complete support, compatibility, privacy, and threat-model documentation.
@@ -338,7 +318,7 @@ Goal: freeze the support contract and prove upgrades before declaring stability.
 - [ ] Keep plugin ID, commands, paths, and legacy environment variables unchanged.
 - [ ] Open a 30-day release-candidate observation window.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] No unresolved P0/P1 security, migration, data-loss, or installation issue for 30 days.
 - [ ] Upgrade from 0.2.5 passes on every supported harness and OS.
@@ -346,11 +326,11 @@ Goal: freeze the support contract and prove upgrades before declaring stability.
 
 Non-goals: plugin-ID rename, new provider, large new feature, legacy removal.
 
-## Release 1.0.0 - Stable Contract
+### Release 1.0.0 - Stable Contract
 
 Goal: publish a dependable long-term support and compatibility boundary.
 
-### Tasks
+#### Tasks
 
 - [ ] Ship only the reviewed release candidate.
 - [ ] Publish checksummed artifacts and release metadata.
@@ -360,7 +340,7 @@ Goal: publish a dependable long-term support and compatibility boundary.
 - [ ] Confirm independent reviews have no release blocker.
 - [ ] Preserve every promised 1.x compatibility alias.
 
-### Acceptance evidence
+#### Acceptance evidence
 
 - [ ] Every global release gate is GREEN with fresh evidence.
 - [ ] Every 0.9.0 blocker is closed and independently verified.
@@ -382,5 +362,9 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-The active build is `0.3.2`. Releases `0.4.0` through `1.0.0` remain pending until their dependencies
-and evidence gates are satisfied.
+**Shipped baseline: `0.3.5`.** Delivered work through 0.3.5 is complete (trust boundary, install/
+doctor/updates, roles, reliable configuration, portability fixes, executor-model alias).
+
+**Next planned tranche: `0.4.0` (Provider Adapter Contract).** Releases `0.5.0` through `1.0.0`
+remain pending until their dependencies and evidence gates are satisfied. Docs and install UX may
+improve on the 0.3.5 baseline without claiming unfinished 0.4.0 capabilities.
