@@ -2,7 +2,8 @@ name: offline
 
 # Keyless, offline-only CI. No API keys, no live model calls — mirrors FrontierFuse's boundary.
 # Runs the stdlib-only contract aggregate (tests/run_contracts.py) + compile checks on the
-# supported Python range (3.10, 3.12) on Linux and macOS.
+# supported Python range (3.10, 3.12) on Linux and macOS. Also runs the offline pre-push
+# equivalent (denylist, version metadata, public-release scrub) without provider CLIs.
 
 on:
   push:
@@ -23,14 +24,25 @@ jobs:
         python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Byte-compile all modules
-        run: python -m compileall -q frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py frontier_verify.py frontier_scrub.py hooks tests
+        run: python -m compileall -q frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py frontier_verify.py frontier_scrub.py hooks tests scripts
       - name: Foundation smoke (no keys)
         run: python frontier_common.py
+      - name: Public-release scrub (worktree)
+        run: python scripts/public-release-scrub.py
+      - name: Public-release scrub (all history)
+        run: python scripts/public-release-scrub.py --all-history
+      - name: Shared denylist (tracked paths)
+        run: python scripts/release_denylist.py --check-tracked
+      - name: Pre-push equivalent (offline + full-history scrub)
+        # No claude/plugin validate, no live provider dry-runs. Public-release gates only.
+        run: bash scripts/pre-push-check.sh --offline --all-history
       - name: Offline contract aggregate
         run: python tests/run_contracts.py
       - name: Runner self-test

@@ -14,6 +14,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+_SCRIPTS = Path(__file__).resolve().parent
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+
+import release_denylist as denylist  # noqa: E402
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -23,21 +29,45 @@ class Finding:
     kind: str
 
 
+# High-confidence content detectors. Patterns must not require printing the match.
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("PRIVATE_KEY", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----")),
     ("AWS_ACCESS_KEY", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GCP_API_KEY", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),
-    ("OPENAI_ANTHROPIC_OR_OPENROUTER_KEY", re.compile(r"\bsk-(?:proj-|ant-|or-)?[A-Za-z0-9\-_]{20,}\b")),
+    (
+        "OPENAI_ANTHROPIC_OR_OPENROUTER_KEY",
+        re.compile(r"\bsk-(?:proj-|ant-|or-)?[A-Za-z0-9\-_]{20,}\b"),
+    ),
     ("GITHUB_TOKEN", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b")),
     ("SLACK_TOKEN", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
     ("STRIPE_KEY", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b")),
+    # Additional common provider token prefixes (high-confidence shape only).
+    ("HF_TOKEN", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
+    ("NPM_TOKEN", re.compile(r"\bnpm_[A-Za-z0-9]{20,}\b")),
+    ("PYPI_TOKEN", re.compile(r"\bpypi-[A-Za-z0-9_\-]{20,}\b")),
+    ("XAI_TOKEN", re.compile(r"\bxai-[A-Za-z0-9_\-]{20,}\b")),
     ("JWT", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")),
     ("BEARER_TOKEN", re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{16,}\b")),
+    # dotenv / export style: OPENAI_API_KEY=..., export ANTHROPIC_API_KEY='...', TOKEN=...
+    # Value charset is secret-like (no '.' / '(') so code such as TOKEN = re.compile(...) is ignored.
+    (
+        "DOTENV_SECRET_ASSIGNMENT",
+        re.compile(
+            r"(?i)^\s*(?:export\s+)?"
+            r"[A-Za-z_]*"
+            r"(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE[_-]?KEY)"
+            r"[A-Za-z0-9_]*\s*=\s*['\"]?"
+            r"[A-Za-z0-9+_/=-]{8,}"
+        ),
+    ),
+    # Inline assignments, including names like MY_API_KEY / service_token (not bare prose).
     (
         "SECRET_ASSIGNMENT",
         re.compile(
-            r"(?i)\b(?:api[_-]?key|secret|passwd|password|token|access[_-]?key)\b"
-            r"\s*[:=]\s*['\"]?[A-Za-z0-9/+._\-]{12,}"
+            r"(?i)(?:^|[\s,;{])(?:export\s+)?"
+            r"(?:[A-Za-z][A-Za-z0-9_]*_)?"
+            r"(?:api[_-]?key|secret|passwd|password|token|access[_-]?key|credentials?)\b"
+            r"\s*[:=]\s*['\"]?[A-Za-z0-9+/_=\-]{12,}"
         ),
     ),
     ("URL_CREDENTIALS", re.compile(r"https?://[^/\s:@]+:[^@\s]+@")),
@@ -46,12 +76,6 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 OPAQUE_TOKEN = re.compile(r"\b[A-Za-z0-9+/_\-]{32,}={0,2}\b")
 SECRET_WORD = re.compile(r"(?i)(secret|token|api[_-]?key|password|passwd|credential|private)")
-
-TRACKED_FORBIDDEN_PATHS = re.compile(
-    r"(^runs/|^verdict\.json$|(^|/)__pycache__/|\.pyc$|^\.omc/|^\.omx/|^\.grokprint/|"
-    r"^\.buildlog/|"
-    r"provider.*log|transcript)"
-)
 
 
 def run_git(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -82,6 +106,12 @@ def is_binaryish(text: str) -> bool:
     return control > max(20, len(sample) // 20)
 
 
+def format_finding(finding: Finding) -> str:
+    """Non-leaky single-line finding (scope/path/line/kind only)."""
+    line = f":{finding.line}" if finding.line else ""
+    return f"- {finding.scope}:{finding.path}{line}: {finding.kind}"
+
+
 def scan_text(scope: str, path: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     if is_binaryish(text):
@@ -93,7 +123,9 @@ def scan_text(scope: str, path: str, text: str) -> list[Finding]:
         if SECRET_WORD.search(line):
             for match in OPAQUE_TOKEN.finditer(line):
                 token = match.group(0)
-                if "_" in token and token.upper() == token:
+                # Python/shell identifiers in test names and code are not opaque values.
+                # Prefix detectors and assignment detectors still cover named provider secrets.
+                if token.isidentifier():
                     continue
                 if shannon(token) >= 3.6:
                     findings.append(Finding(scope, path, line_no, "HIGH_ENTROPY_SECRET_CONTEXT"))
@@ -108,12 +140,13 @@ def tracked_files() -> list[str]:
 def scan_worktree() -> list[Finding]:
     findings: list[Finding] = []
     for path in tracked_files():
-        if TRACKED_FORBIDDEN_PATHS.search(path):
+        if denylist.is_forbidden_path(path):
             findings.append(Finding("worktree", path, 0, "TRACKED_PRIVATE_OR_GENERATED_PATH"))
             continue
         try:
             text = Path(path).read_text(errors="ignore")
         except OSError:
+            findings.append(Finding("worktree", path, 0, "WORKTREE_FILE_READ_ERROR"))
             continue
         findings.extend(scan_text("worktree", path, text))
     return findings
@@ -140,25 +173,51 @@ def commits_for_all_history() -> list[str]:
     return [line for line in git_text(["rev-list", "--all"]).splitlines() if line]
 
 
-def show_file(commit: str, path: str) -> str:
+def show_file(commit: str, path: str) -> str | None:
     proc = run_git(["show", f"{commit}:{path}"], check=False)
     if proc.returncode != 0:
-        return ""
+        return None
     return proc.stdout
+
+
+def commit_message(commit: str) -> str | None:
+    proc = run_git(["log", "-1", "--format=%B", commit], check=False)
+    if proc.returncode != 0:
+        return None
+    return proc.stdout
+
+
+def tree_paths(commit: str) -> list[str] | None:
+    proc = run_git(["ls-tree", "-r", "--name-only", commit], check=False)
+    if proc.returncode != 0:
+        return None
+    return [line for line in proc.stdout.splitlines() if line]
 
 
 def scan_commits(commits: list[str], scope_name: str) -> list[Finding]:
     findings: list[Finding] = []
     for commit in commits:
         short = commit[:12]
-        files = [line for line in git_text(["ls-tree", "-r", "--name-only", commit]).splitlines() if line]
+        scope = f"{scope_name}:{short}"
+        # Commit subjects/bodies can carry leaked tokens; scan without printing values.
+        msg = commit_message(commit)
+        if msg is None:
+            findings.append(Finding(scope, "COMMIT_MESSAGE", 0, "HISTORY_COMMIT_MESSAGE_READ_ERROR"))
+        elif msg:
+            findings.extend(scan_text(scope, "COMMIT_MESSAGE", msg))
+        files = tree_paths(commit)
+        if files is None:
+            findings.append(Finding(scope, "TREE", 0, "HISTORY_TREE_READ_ERROR"))
+            continue
         for path in files:
-            if TRACKED_FORBIDDEN_PATHS.search(path):
-                findings.append(Finding(f"{scope_name}:{short}", path, 0, "TRACKED_PRIVATE_OR_GENERATED_PATH"))
+            if denylist.is_forbidden_path(path):
+                findings.append(Finding(scope, path, 0, "TRACKED_PRIVATE_OR_GENERATED_PATH"))
                 continue
             text = show_file(commit, path)
-            if text:
-                findings.extend(scan_text(f"{scope_name}:{short}", path, text))
+            if text is None:
+                findings.append(Finding(scope, path, 0, "HISTORY_FILE_READ_ERROR"))
+            elif text:
+                findings.extend(scan_text(scope, path, text))
     return findings
 
 
@@ -179,19 +238,23 @@ def main() -> int:
     parser.add_argument("--all-history", action="store_true", help="scan every commit reachable from refs")
     args = parser.parse_args()
 
-    findings = scan_worktree()
-    if args.push_range:
-        findings.extend(scan_commits(commits_for_push_range(), "push"))
-    if args.all_history:
-        findings.extend(scan_commits(commits_for_all_history(), "history"))
+    try:
+        findings = scan_worktree()
+        if args.push_range:
+            findings.extend(scan_commits(commits_for_push_range(), "push"))
+        if args.all_history:
+            findings.extend(scan_commits(commits_for_all_history(), "history"))
+    except (OSError, subprocess.SubprocessError):
+        print("public-release-scrub: FAIL", file=sys.stderr)
+        print("Git inspection failed; release is blocked until the scrub can complete.", file=sys.stderr)
+        return 2
     findings = dedupe(findings)
 
     if findings:
         print("public-release-scrub: FAIL", file=sys.stderr)
         print("Matched values are intentionally not printed.", file=sys.stderr)
         for finding in findings:
-            line = f":{finding.line}" if finding.line else ""
-            print(f"- {finding.scope}:{finding.path}{line}: {finding.kind}", file=sys.stderr)
+            print(format_finding(finding), file=sys.stderr)
         print("Scrub the file/history, rotate any real exposed secret, then rerun this scanner.", file=sys.stderr)
         return 1
 

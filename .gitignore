@@ -18,4 +18,35 @@ venv/
 # raw build-in-public journal; local source material, not public release history
 .buildlog/
 
+# dotenv / credential / key material (aligned with scripts/release_denylist.py)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+id_ecdsa
+*credentials*.json
+*credential*.yaml
+*credential*.yml
+*secrets*.json
+*secret*.yaml
+*secret*.yml
+*.quarantine
+quarantine/
+
+# provider logs / transcript artifacts (not prose docs)
+provider-*.log
+*_provider.log
+transcripts/
+*.transcript
+*.transcript.json
+*.transcript.jsonl
+*.transcript.log
+*.transcript.txt
+
 # NOTE: skills/frontierfuse/ IS source and is intentionally NOT ignored.
