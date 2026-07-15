@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""frontier_dispatch.py — orchestrator-mode body-caller + control CLI for FrontierFuse.
+"""frontier_dispatch.py — host-led orchestrator body-caller + control CLI for FrontierFuse.
 
-In orchestrator mode Fable (the in-session brain) never executes directly. It delegates every
-execution/research/tool/MCP task to the selected body/lead executor through this CLI, reads the bounded
-handoff cards, verifies against raw diff + gate stdout, and only closes on a fresh GREEN verdict.
+Orchestrator profile is host-led verified orchestration with managed frontier consult/executor
+bodies. The host-bound harness remains the session lead. A configured frontier model is a managed
+consult only — selecting it does not hot-swap the host conversation model or make the frontier the
+host lead, and no frontier model (including Claude Fable) is hard-wired. The host controller
+delegates every execution/research/tool/MCP task to the selected body/lead executor through this
+CLI, reads the bounded handoff cards, verifies against raw diff + gate stdout, and only closes on a
+fresh GREEN verdict.
 
 Subcommands:
   dispatch "task" [...]        run one selected body/lead executor (or several with --parallel)
@@ -15,7 +19,7 @@ Subcommands:
   config [--profile advisor|orchestrator --frontier-provider PROVIDER --frontier-model MODEL
           --executor PROVIDER --executor-model MODEL --effort --fast on|off --global]
                                 print/persist toggles
-  models [--provider PROVIDER]  verified catalog plus local CLI discoveries
+  models [--provider PROVIDER]  verified catalog; local CLI discovery where supported (codex/grok)
   doctor [--check-updates]     offline readiness table; opt in to a cached release check
   update --check              cached, privacy-preserving release check
   install-hooks | uninstall-hooks   reversible merge of the hooks into ~/.claude/settings.json
@@ -52,19 +56,175 @@ _EXECUTOR_MODEL_KEYS = {
     "grok": "grok_model",
     "gemini": "gemini_model",
 }
+# Provider-specific model CLI flags that must not be combined with --executor-model/--model
+# for the selected executor (Codex has no separate provider model flag).
+_PROVIDER_MODEL_FLAG_ATTRS = {
+    "claude": ("claude_model", "--claude-model"),
+    "grok": ("grok_model", "--grok-model"),
+    "gemini": ("gemini_model", "--gemini-model"),
+}
+_PROVIDER_CLI_NAMES = {
+    "codex": "codex",
+    "claude": "claude",
+    "grok": "grok",
+    "gemini": "gemini",
+}
+# Doctor JSON statement: PATH presence is not auth or entitlement.
+AVAILABILITY_NOTE = (
+    "CLI availability is not authentication or model entitlement."
+)
+
+
+def _default_executor_model_for(provider: str) -> str:
+    """Static executor-model defaults (Codex empty pin = account-aware default)."""
+    d = fc.defaults()
+    if provider == "codex":
+        return str(d.get("codex_model") or "")
+    if provider == "claude":
+        return str(d.get("claude_model") or "claude-sonnet-5")
+    if provider == "grok":
+        return str(d.get("grok_model") or "grok-4.5")
+    if provider == "gemini":
+        return str(d.get("gemini_model") or "gemini-3.5-flash")
+    return ""
+
+
+def _default_frontier_model_for(provider: str) -> str:
+    """Static frontier-model defaults matching build_frontier_command / effective_frontier_model."""
+    if provider == "claude":
+        return "claude-fable-5"
+    if provider == "codex":
+        return ""  # account default semantics
+    if provider == "grok":
+        return "grok-4.5"
+    if provider == "gemini":
+        return "gemini-3.5-flash"
+    return ""
+
+
+def _configured_executor_model(cfg: dict, executor: str) -> str:
+    key = _EXECUTOR_MODEL_KEYS.get(executor)
+    if key is None:
+        return ""
+    value = cfg.get(key)
+    if value is None:
+        return _default_executor_model_for(executor)
+    return str(value)
+
+
+def suggest_provider_availability(
+    cfg: dict,
+    *,
+    lookup=None,
+) -> dict | None:
+    """Non-mutating PATH-only availability suggestion for doctor (stdlib / shutil.which only).
+
+    Never probes auth, network, or models, and never writes configuration.
+
+    Returns ``None`` when the configured executor and frontier provider CLIs are both present
+    (configured selection is preserved as-is). When one or both are missing, returns a
+    deterministic suggestion drawn only from present supported provider executables, using static
+    defaults / Codex account-default semantics for any role that must change.
+    """
+    which = lookup if lookup is not None else shutil.which
+    present = {
+        provider: bool(which(cli_name))
+        for provider, cli_name in _PROVIDER_CLI_NAMES.items()
+    }
+    present_list = sorted(provider for provider, ok in present.items() if ok)
+
+    executor = str(cfg.get("executor") or "codex").lower()
+    frontier = str(cfg.get("frontier_provider") or "claude").lower()
+    if executor not in _PROVIDER_CLI_NAMES:
+        executor = "codex"
+    if frontier not in _PROVIDER_CLI_NAMES:
+        frontier = "claude"
+
+    executor_ok = bool(present.get(executor))
+    frontier_ok = bool(present.get(frontier))
+    if executor_ok and frontier_ok:
+        return None
+    if not present_list:
+        return None
+
+    defaults = fc.defaults()
+    default_executor = str(defaults.get("executor") or "codex")
+    default_frontier = str(defaults.get("frontier_provider") or "claude")
+
+    def _pick(preferred: str, preferred_ok: bool, role_default: str) -> str:
+        if preferred_ok:
+            return preferred
+        if present.get(role_default):
+            return role_default
+        return present_list[0]
+
+    suggested_executor = _pick(executor, executor_ok, default_executor)
+    suggested_frontier = _pick(frontier, frontier_ok, default_frontier)
+
+    if suggested_executor == executor and executor_ok:
+        executor_model = _configured_executor_model(cfg, suggested_executor)
+    else:
+        executor_model = _default_executor_model_for(suggested_executor)
+
+    if suggested_frontier == frontier and frontier_ok:
+        frontier_model = str(cfg.get("frontier_model") or "")
+        if not frontier_model and suggested_frontier != "codex":
+            frontier_model = _default_frontier_model_for(suggested_frontier)
+    else:
+        frontier_model = _default_frontier_model_for(suggested_frontier)
+
+    missing = sorted(
+        {
+            *( [executor] if not executor_ok else [] ),
+            *( [frontier] if not frontier_ok else [] ),
+        }
+    )
+    return {
+        "profile": str(cfg.get("profile") or defaults.get("profile") or "advisor"),
+        "executor": suggested_executor,
+        "executor_model": executor_model,
+        "frontier_provider": suggested_frontier,
+        "frontier_model": frontier_model,
+        "present_provider_clis": present_list,
+        "missing_configured_clis": missing,
+        "preserves_executor": bool(executor_ok),
+        "preserves_frontier": bool(frontier_ok),
+    }
 
 
 # --------------------------------------------------------------------------- #
 # dispatch — run selected bodies
 # --------------------------------------------------------------------------- #
-def _overrides(args) -> dict:
-    def _executor_model(args_obj) -> str | None:
-        legacy_model = getattr(args_obj, "model", None)
-        explicit_model = getattr(args_obj, "executor_model", None)
-        if legacy_model is not None and explicit_model is not None:
-            raise ValueError("use either --model (legacy) or --executor-model, not both")
-        return explicit_model if explicit_model is not None else legacy_model
+def _generic_executor_model(args_obj) -> str | None:
+    """Resolve --executor-model / legacy --model; refuse when both are set."""
+    legacy_model = getattr(args_obj, "model", None)
+    explicit_model = getattr(args_obj, "executor_model", None)
+    if legacy_model is not None and explicit_model is not None:
+        raise ValueError("use either --model (legacy) or --executor-model, not both")
+    return explicit_model if explicit_model is not None else legacy_model
 
+
+def _provider_model_flag_conflict(args_obj, executor: str) -> str | None:
+    """Refuse generic + selected-executor provider-specific model flags (no silent winner)."""
+    generic_set = (
+        getattr(args_obj, "model", None) is not None
+        or getattr(args_obj, "executor_model", None) is not None
+    )
+    if not generic_set:
+        return None
+    spec = _PROVIDER_MODEL_FLAG_ATTRS.get(executor)
+    if spec is None:
+        return None
+    attr, flag = spec
+    if getattr(args_obj, attr, None) is not None:
+        return (
+            f"use either --executor-model/--model or {flag} for the {executor} executor, "
+            "not both"
+        )
+    return None
+
+
+def _overrides(args) -> dict:
     ov: dict = {}
     if args.fast:
         ov["fast"] = (args.fast == "on")
@@ -83,7 +243,10 @@ def _overrides(args) -> dict:
         raise ValueError(
             f"unknown executor {executor!r}; expected one of {sorted(fc.KNOWN_EXECUTORS)}"
         )
-    selected_model = _executor_model(args)
+    conflict = _provider_model_flag_conflict(args, executor)
+    if conflict:
+        raise ValueError(conflict)
+    selected_model = _generic_executor_model(args)
     if selected_model is not None:
         model_key = "fast_model" if fast and executor == "codex" else _EXECUTOR_MODEL_KEYS[executor]
         ov[model_key] = selected_model
@@ -104,13 +267,13 @@ def _overrides(args) -> dict:
         ov["profile"] = args.profile
     if getattr(args, "frontier_provider", None):
         ov["frontier_provider"] = args.frontier_provider
-    if getattr(args, "frontier_model", None):
+    if getattr(args, "frontier_model", None) is not None:
         ov["frontier_model"] = args.frontier_model
-    if getattr(args, "claude_model", None):
+    if getattr(args, "claude_model", None) is not None:
         ov["claude_model"] = args.claude_model
-    if getattr(args, "grok_model", None):
+    if getattr(args, "grok_model", None) is not None:
         ov["grok_model"] = args.grok_model
-    if getattr(args, "gemini_model", None):
+    if getattr(args, "gemini_model", None) is not None:
         ov["gemini_model"] = args.gemini_model
     return ov
 
@@ -401,16 +564,16 @@ def cmd_config(args) -> int:
             file=sys.stderr,
         )
         return 2
-    if args.model is not None and getattr(args, "executor_model", None) is not None:
-        print(
-            "config refused: use either --model (legacy) or --executor-model, not both",
-            file=sys.stderr,
-        )
+    try:
+        selected_model = _generic_executor_model(args)
+    except ValueError as exc:
+        print(f"config refused: {exc}", file=sys.stderr)
         return 2
-    legacy_model = getattr(args, "model", None)
-    explicit_model = getattr(args, "executor_model", None)
-    if legacy_model is not None or explicit_model is not None:
-        selected_model = explicit_model if explicit_model is not None else legacy_model
+    conflict = _provider_model_flag_conflict(args, executor)
+    if conflict:
+        print(f"config refused: {conflict}", file=sys.stderr)
+        return 2
+    if selected_model is not None:
         model_key = (
             "fast_model" if fast and executor == "codex"
             else _EXECUTOR_MODEL_KEYS[executor]
@@ -456,7 +619,7 @@ def cmd_config(args) -> int:
     except ValueError as exc:
         body_cmd = f"<unavailable: {exc}>"
     print("body cmd :", body_cmd, file=sys.stderr)
-    print("brain cmd:", " ".join(fc.build_frontier_command(cfg)), file=sys.stderr)
+    print("frontier consult cmd:", " ".join(fc.build_frontier_command(cfg)), file=sys.stderr)
     return 0
 
 
@@ -465,18 +628,26 @@ def cmd_models(args) -> int:
 
     providers = [args.provider] if args.provider else sorted(frontier_models.PROVIDERS)
     payload = {
-        provider: {
-            "source": frontier_models.SOURCES[provider],
-            "models": frontier_models.models_for(provider, discover=not args.no_discover),
-            "custom_model_allowed": True,
-        }
+        provider: frontier_models.provider_models_payload(
+            provider, discover=not args.no_discover
+        )
         for provider in providers
     }
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
     for provider in providers:
-        print(f"{provider} ({payload[provider]['source']})")
+        disc = payload[provider]["discovery"]
+        if not disc["supported"]:
+            disc_note = "local discovery not supported"
+        elif not disc["attempted"]:
+            disc_note = "local discovery skipped"
+        elif disc["succeeded"]:
+            disc_note = f"local discovery: {len(disc['discovered_ids'])} id(s)"
+        else:
+            err = disc.get("error_class") or "failed"
+            disc_note = f"local discovery failed ({err})"
+        print(f"{provider} ({payload[provider]['source']}; {disc_note})")
         for row in payload[provider]["models"]:
             model = row["id"] or "<account default>"
             print(f"  {model:28} {row['status']:11} {row['description']}")
@@ -539,7 +710,13 @@ def cmd_doctor(args) -> int:
             "detail": "FRONTIER_SESSION_ID is invalid",
             "next_step": "Set FRONTIER_SESSION_ID to a nonempty valid string, then rerun doctor.",
         }
-        payload = {"status": "config_invalid", "ready": False, "checks": [check]}
+        payload = {
+            "status": "config_invalid",
+            "ready": False,
+            "checks": [check],
+            "availability_suggestion": None,
+            "availability_note": AVAILABILITY_NOTE,
+        }
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -556,7 +733,13 @@ def cmd_doctor(args) -> int:
             "detail": str(fc.STATE_DIR),
             "next_step": "Replace the path with a writable directory or fix its ownership and permissions.",
         }
-        payload = {"status": "not_ready", "ready": False, "checks": [check]}
+        payload = {
+            "status": "not_ready",
+            "ready": False,
+            "checks": [check],
+            "availability_suggestion": None,
+            "availability_note": AVAILABILITY_NOTE,
+        }
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -623,7 +806,13 @@ def cmd_doctor(args) -> int:
             "detail": f"{path}: {reason}",
             "next_step": next_step,
         }
-        payload = {"status": "config_invalid", "ready": False, "checks": [check]}
+        payload = {
+            "status": "config_invalid",
+            "ready": False,
+            "checks": [check],
+            "availability_suggestion": None,
+            "availability_note": AVAILABILITY_NOTE,
+        }
         if args.json:
             print(json.dumps(payload, indent=2, sort_keys=True))
         else:
@@ -763,12 +952,15 @@ def cmd_doctor(args) -> int:
         }
         for label, ok, status, info, next_step in rows
     ]
+    availability_suggestion = suggest_provider_availability(cfg)
     if args.json:
         print(json.dumps({
             "status": "ready" if ready else "not_ready",
             "ready": ready,
             "checks": checks,
             "effective_config": cfg,
+            "availability_suggestion": availability_suggestion,
+            "availability_note": AVAILABILITY_NOTE,
         }, indent=2, sort_keys=True, allow_nan=False))
         return 0 if ready else 1
 
@@ -777,10 +969,19 @@ def cmd_doctor(args) -> int:
         print(f"  {mark(ok)}  {label:22} {status.upper()}: {info}")
         if next_step:
             print(f"      next: {next_step}")
+    if availability_suggestion is not None:
+        print(
+            "\n  PATH availability suggestion (non-mutating; not auth/entitlement): "
+            f"executor={availability_suggestion['executor']!r} "
+            f"executor_model={availability_suggestion['executor_model']!r} "
+            f"frontier_provider={availability_suggestion['frontier_provider']!r} "
+            f"frontier_model={availability_suggestion['frontier_model']!r}"
+        )
+        print(f"  note: {AVAILABILITY_NOTE}")
     print(f"\n{'READY' if ready else 'NOT READY'} — offline CLI readiness only: need the "
           f"{cfg['executor']} body CLI on PATH and the {cfg['frontier_provider']} frontier CLI "
-          "for managed advice. Authentication and model entitlement are not probed; offline "
-          "tests/dry-run work regardless.")
+          "for managed advice. CLI availability is not authentication or model entitlement; "
+          "offline tests/dry-run work regardless.")
     return 0 if ready else 1
 
 
@@ -983,8 +1184,16 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="config: clear fast-model pin so it inherits the regular Codex model")
     ap.add_argument("--effort", choices=["low", "medium", "high", "xhigh"], default=None)
     ap.add_argument("--fast", choices=["on", "off"], default=None)
-    ap.add_argument("--profile", choices=sorted(fc.KNOWN_PROFILES), default=None,
-                    help="advisor (executor-led) or orchestrator (frontier-led)")
+    ap.add_argument(
+        "--profile",
+        choices=sorted(fc.KNOWN_PROFILES),
+        default=None,
+        help=(
+            "advisor (host/executor-led) or orchestrator (host-led verified orchestration with "
+            "managed frontier consult/executor bodies); selecting a frontier model never makes it "
+            "the host lead"
+        ),
+    )
     ap.add_argument("--frontier-provider", choices=sorted(fc.KNOWN_EXECUTORS), default=None)
     ap.add_argument("--frontier-model", default=None)
     ap.add_argument("--executor", choices=sorted(fc.KNOWN_EXECUTORS), default=None,

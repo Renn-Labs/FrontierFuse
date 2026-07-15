@@ -2,8 +2,9 @@
 """frontier_advisor.py - advisor-mode core for FrontierFuse.
 
 In advisor mode (default), the selected executor is the main loop and consults the configured
-frontier model ON-DEMAND via ``ask_frontier``. The frontier model gives concise guidance; the
-executor does the work.
+frontier model ON-DEMAND via ``ask_frontier``. The frontier model is a managed consult only: the
+host-bound harness and selected executor remain the session lead. Selecting a frontier model does
+not hot-swap the host. The frontier model gives concise guidance; the executor does the work.
 
 stdlib-only, Python 3.10+, importable for offline contract tests.
 """
@@ -68,9 +69,14 @@ def ask_frontier(
     timeout: int = 180,
     session_id: str | None = None,
 ) -> dict:
-    """Consult the configured frontier model on-demand. Returns {ok, advice, model, note}."""
+    """Consult the configured frontier model on-demand. Returns {ok, advice, model, note}.
+
+    ``model`` is the effective frontier model selected by ``build_frontier_command`` policy
+    (via ``effective_frontier_model``), not a hard-wired Claude Fable ID.
+    """
     cfg = fc.resolve_config(session_id=session_id)
     cmd = fc.build_frontier_command(cfg)
+    effective_model = fc.effective_frontier_model(cfg)
     prompt = _build_advisor_prompt(question, context, _lead_description(cfg))
     rc, stdout, stderr = fc.run_engine(cmd, prompt, timeout=timeout)
 
@@ -78,7 +84,7 @@ def ask_frontier(
         return {
             "ok": True,
             "advice": _normalize_advice(stdout),
-            "model": cfg.get("frontier_model") or "claude-fable-5",
+            "model": effective_model,
             "note": "",
         }
 
@@ -86,7 +92,7 @@ def ask_frontier(
     return {
         "ok": False,
         "advice": "",
-        "model": cfg.get("frontier_model") or "claude-fable-5",
+        "model": effective_model,
         "note": note,
     }
 

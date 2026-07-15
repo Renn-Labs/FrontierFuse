@@ -56,6 +56,81 @@ def test_models_cli_json_is_machine_readable() -> None:
     assert list(payload) == ["gemini"]
     assert payload["gemini"]["custom_model_allowed"] is True
     assert any(row["id"] == "gemini-3.5-flash" for row in payload["gemini"]["models"])
+    disc = payload["gemini"]["discovery"]
+    assert disc["supported"] is False
+    assert disc["attempted"] is False
+    assert disc["succeeded"] is False
+    assert disc["discovered_ids"] == []
+
+
+def test_discovery_supported_only_for_codex_and_grok() -> None:
+    assert models.DISCOVERY_SUPPORTED == frozenset({"codex", "grok"})
+    for provider in ("claude", "gemini"):
+        result = models.discover_models(provider, attempt=True)
+        assert result == {
+            "supported": False,
+            "attempted": False,
+            "succeeded": False,
+            "discovered_ids": [],
+            "error_class": None,
+        }
+        assert models.discover_local_models(provider) == []
+
+    for provider in ("codex", "grok"):
+        skipped = models.discover_models(provider, attempt=False)
+        assert skipped["supported"] is True
+        assert skipped["attempted"] is False
+        assert skipped["succeeded"] is False
+        assert skipped["discovered_ids"] == []
+        assert skipped["error_class"] is None
+
+
+def test_parse_local_model_listings_without_inventing_ids() -> None:
+    grok_ids = models._parse_grok_models(
+        "Available models:\n"
+        "* grok-4.5 (default)\n"
+        "* grok-4\n"
+        "please ignore prose without a bullet\n"
+    )
+    assert grok_ids == ["grok-4.5", "grok-4"]
+
+    codex_ids = models._parse_codex_models(
+        "Models:\n"
+        "  gpt-5.6-sol\n"
+        "  gpt-5.4-mini\n"
+        "Reasoning effort:\n"
+        "  high\n"
+        "  xhigh\n"
+    )
+    assert codex_ids == ["gpt-5.6-sol", "gpt-5.4-mini"]
+    assert "high" not in codex_ids
+
+    assert models._parse_grok_models("please log in first") is None
+    # Header/listing with no parseable IDs is malformed (None), not an invented empty success.
+    assert models._parse_codex_models("Models:\n") is None
+    assert models._parse_grok_models("Available models:\n") is None
+
+
+def test_provider_models_payload_includes_discovery_metadata() -> None:
+    payload = models.provider_models_payload("claude", discover=True)
+    assert payload["custom_model_allowed"] is True
+    assert payload["source"] == models.SOURCES["claude"]
+    assert any(row["id"] == "claude-fable-5" for row in payload["models"])
+    assert payload["discovery"]["supported"] is False
+    assert payload["discovery"]["discovered_ids"] == []
+
+    skipped = models.provider_models_payload("codex", discover=False)
+    assert skipped["discovery"]["supported"] is True
+    assert skipped["discovery"]["attempted"] is False
+    assert all(row["status"] != "local" for row in skipped["models"])
+
+
+def test_discovery_language_does_not_overstate_cli_behavior() -> None:
+    discover_docs = models.discover_models.__doc__ or ""
+    local_docs = models.discover_local_models.__doc__ or ""
+    assert "may use its own authentication or network behavior" in discover_docs
+    assert "not an entitlement guarantee" in discover_docs
+    assert "entitlement-aware" not in local_docs
 
 
 def main() -> int:
@@ -63,6 +138,10 @@ def main() -> int:
         test_catalog_has_all_supported_providers,
         test_catalog_contains_verified_current_and_previous_models,
         test_models_cli_json_is_machine_readable,
+        test_discovery_supported_only_for_codex_and_grok,
+        test_parse_local_model_listings_without_inventing_ids,
+        test_provider_models_payload_includes_discovery_metadata,
+        test_discovery_language_does_not_overstate_cli_behavior,
     ]
     failed = 0
     for test in tests:

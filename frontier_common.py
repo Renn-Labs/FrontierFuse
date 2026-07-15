@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
 """frontier_common.py — shared foundation for FrontierFuse (the contract every module imports).
 
-FrontierFuse pairs two model roles:
-  - BODY / EXECUTOR = Codex   (`codex exec -c model_reasoning_effort=high`, no pinned model —
-                              Codex's own current account-aware default is used unless
-                              FRONTIER_CODEX_MODEL / --model explicitly pins one)
-                     or Sonnet / Opus through the Claude CLI, or Grok Build CLI when selected.
-  - BRAIN / ADVISOR = Fable 5 (`claude -p --model claude-fable-5`)
+FrontierFuse pairs two model roles. A configured frontier model is a managed consult; the
+host-bound harness remains the session lead. Selecting a frontier model does not hot-swap the
+host conversation model, and no frontier model (including Claude Fable) is hard-wired.
+
+  - BODY / EXECUTOR = the selected provider (codex|claude|grok|gemini) that performs work.
+                      Codex default is unpinned (account-aware) unless FRONTIER_CODEX_MODEL /
+                      --model / --executor-model explicitly pins one.
+  - FRONTIER / ADVISOR = a managed consult to the configured frontier provider/model
+                         (default Claude Fable 5 via `claude -p --model claude-fable-5`).
 
 Two control flows are built on this foundation:
-  - advisor  (default): the selected executor/lead is the main loop and consults Fable ON-DEMAND
-                        via `ask_frontier` (frontier_advisor.py / frontier_advisor_mcp.py).
-  - orchestrator      : Fable is the in-session main loop and dispatches selected bodies
-                        (frontier_dispatch.py) behind a workflow guardrail + deterministic verdict.
+  - advisor  (default): host/executor-led — the selected executor is the main loop and consults the
+                        configured frontier model ON-DEMAND via `ask_frontier` (frontier_advisor.py /
+                        frontier_advisor_mcp.py). Selecting a frontier model never makes it the host.
+  - orchestrator      : host-led verified orchestration with managed frontier consult/executor
+                        bodies (frontier_dispatch.py) behind a workflow guardrail + deterministic
+                        verdict. The host harness remains the session lead.
 
 This module owns everything shared so the two loops never drift:
   - config toggles + precedence (body/advisor models, effort, fast mode)
   - per-session state file (arm marker, last_dispatch_ts, verdict, session config)
-  - body/lead + Fable command builders and a single run_engine()
-  - artifact capture + bounded handoff cards (so N bodies never flood a brain's context)
+  - body/lead + managed-frontier command builders and a single run_engine()
+  - artifact capture + bounded handoff cards (so N bodies never flood a controller's context)
   - the verdict schema + kill-switch helper
 
 stdlib-only, Python 3.10+, importable (underscore name) for offline contract tests.
@@ -1609,8 +1614,30 @@ def build_codex_command(cfg: dict) -> list[str]:
     return ["codex", "exec", *yolo, *model_flag, "-c", f"model_reasoning_effort={effort}", "-"]
 
 
+def effective_frontier_model(cfg: dict) -> str:
+    """Return the effective frontier model selected by build_frontier_command policy.
+
+    Empty Codex pin is reported as ``account default`` (never as Claude Fable). Claude, Grok,
+    and Gemini apply their builder defaults when the pin is empty.
+    """
+    provider = str(cfg.get("frontier_provider") or "claude").lower()
+    pinned = str(cfg.get("frontier_model") or "")
+    if provider == "claude":
+        return pinned or "claude-fable-5"
+    if provider == "codex":
+        return pinned if pinned else "account default"
+    if provider == "grok":
+        return pinned or "grok-4.5"
+    if provider == "gemini":
+        return pinned or "gemini-3.5-flash"
+    return pinned or "account default"
+
+
 def build_frontier_command(cfg: dict) -> list[str]:
-    """Build the managed frontier/advisor command. Override with FRONTIER_ADVISOR_CMD."""
+    """Build the managed frontier/advisor consult command. Override with FRONTIER_ADVISOR_CMD.
+
+    This is a managed consult only: it does not replace the host harness session lead.
+    """
     override = _split_command_override(
         os.environ.get("FRONTIER_ADVISOR_CMD"), "FRONTIER_ADVISOR_CMD"
     )
@@ -1619,14 +1646,15 @@ def build_frontier_command(cfg: dict) -> list[str]:
     provider = str(cfg.get("frontier_provider") or "claude").lower()
     model = str(cfg.get("frontier_model") or "")
     if provider == "claude":
-        return ["claude", "-p", "--model", model or "claude-fable-5"]
+        return ["claude", "-p", "--model", effective_frontier_model(cfg)]
     if provider == "codex":
+        # Empty pin omits --model so Codex keeps its account-aware default.
         model_flag = ["--model", model] if model else []
         return ["codex", "exec", *model_flag, "-"]
     if provider == "grok":
-        return ["grok", "--model", model or "grok-4.5", "--prompt-file", "{prompt_file}"]
+        return ["grok", "--model", effective_frontier_model(cfg), "--prompt-file", "{prompt_file}"]
     if provider == "gemini":
-        return ["gemini", "--model", model or "gemini-3.5-flash", "--prompt", ""]
+        return ["gemini", "--model", effective_frontier_model(cfg), "--prompt", ""]
     raise ValueError(f"unknown frontier provider {provider!r}")
 
 
@@ -1920,6 +1948,6 @@ if __name__ == "__main__":
     print(json.dumps(cfg, indent=2, sort_keys=True))
     print("executor       :", cfg["executor"])
     print("body cmd       :", " ".join(build_body_command(cfg)))
-    print("frontier brain cmd:", " ".join(build_frontier_command(cfg)))
+    print("frontier consult cmd:", " ".join(build_frontier_command(cfg)))
     print("guards_off     :", guards_off())
     sys.exit(0)

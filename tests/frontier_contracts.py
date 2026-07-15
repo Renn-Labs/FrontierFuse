@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 
 import frontier_common as fc  # noqa: E402
 import frontier_advisor  # noqa: E402
+import frontier_dispatch  # noqa: E402
 import frontier_verify  # noqa: E402
 
 SLACK = 120  # truncation marker headroom beyond MAX_RETURN_CHARS
@@ -350,6 +351,148 @@ def test_advisor_prompt_uses_selected_claude_model() -> None:
     )
     assert "Claude (claude-opus-4-8) is the EXECUTOR" in prompt
     assert "Your role is ADVISOR ONLY" in prompt
+
+
+def test_effective_frontier_model_is_not_hard_wired_to_fable() -> None:
+    """Managed frontier defaults follow the selected provider; Codex stays unpinned."""
+    old_adv = _env("FRONTIER_ADVISOR_CMD", None)
+    try:
+        assert fc.effective_frontier_model({"frontier_provider": "claude", "frontier_model": ""}) == (
+            "claude-fable-5"
+        )
+        assert fc.effective_frontier_model({"frontier_provider": "codex", "frontier_model": ""}) == (
+            "account default"
+        )
+        assert fc.effective_frontier_model({"frontier_provider": "grok", "frontier_model": ""}) == (
+            "grok-4.5"
+        )
+        assert fc.effective_frontier_model({"frontier_provider": "gemini", "frontier_model": ""}) == (
+            "gemini-3.5-flash"
+        )
+        assert fc.effective_frontier_model(
+            {"frontier_provider": "codex", "frontier_model": "gpt-5.6-sol"}
+        ) == "gpt-5.6-sol"
+
+        assert fc.build_frontier_command(
+            {"frontier_provider": "claude", "frontier_model": ""}
+        ) == ["claude", "-p", "--model", "claude-fable-5"]
+        assert fc.build_frontier_command(
+            {"frontier_provider": "codex", "frontier_model": ""}
+        ) == ["codex", "exec", "-"]
+        assert fc.build_frontier_command(
+            {"frontier_provider": "codex", "frontier_model": "gpt-5.6-terra"}
+        ) == ["codex", "exec", "--model", "gpt-5.6-terra", "-"]
+        assert fc.build_frontier_command(
+            {"frontier_provider": "grok", "frontier_model": ""}
+        ) == ["grok", "--model", "grok-4.5", "--prompt-file", "{prompt_file}"]
+        assert fc.build_frontier_command(
+            {"frontier_provider": "gemini", "frontier_model": ""}
+        ) == ["gemini", "--model", "gemini-3.5-flash", "--prompt", ""]
+    finally:
+        _restore("FRONTIER_ADVISOR_CMD", old_adv)
+        os.environ["FRONTIER_ADVISOR_CMD"] = "echo"
+
+
+def test_ask_frontier_reports_effective_frontier_model() -> None:
+    """ask_frontier.model follows effective_frontier_model, not a hard-wired Fable ID."""
+    sid = "contract-ask-frontier-effective-model"
+    fc.clear_state(sid)
+    old_adv = _env("FRONTIER_ADVISOR_CMD", "echo")
+    try:
+        fc.write_state(
+            sid,
+            config={
+                "frontier_provider": "codex",
+                "frontier_model": "",
+            },
+        )
+        result = frontier_advisor.ask_frontier("ping", session_id=sid, timeout=10)
+        assert result["ok"] is True
+        assert result["model"] == "account default"
+
+        fc.write_state(
+            sid,
+            config={
+                "frontier_provider": "gemini",
+                "frontier_model": "gemini-2.5-pro",
+            },
+        )
+        result = frontier_advisor.ask_frontier("ping", session_id=sid, timeout=10)
+        assert result["ok"] is True
+        assert result["model"] == "gemini-2.5-pro"
+    finally:
+        _restore("FRONTIER_ADVISOR_CMD", old_adv)
+        os.environ["FRONTIER_ADVISOR_CMD"] = "echo"
+        fc.clear_state(sid)
+
+
+def test_config_refuses_generic_and_provider_model_flag_conflict() -> None:
+    """--executor-model/--model must not mix with the selected executor's provider model flag."""
+    sid = "contract-provider-model-flag-conflict"
+    fc.clear_state(sid)
+    try:
+        proc = _run_dispatch(
+            [
+                "config",
+                "--executor", "claude",
+                "--executor-model", "claude-sonnet-5",
+                "--claude-model", "claude-opus-4-8",
+            ],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 2
+        assert "either" in (proc.stderr or "").lower()
+        assert "--claude-model" in (proc.stderr or "")
+
+        # Empty provider pin is allowed and distinct from a missing flag.
+        proc = _run_dispatch(
+            ["config", "--executor", "claude", "--claude-model", ""],
+            extra_env={"FRONTIER_SESSION_ID": sid},
+        )
+        assert proc.returncode == 0, proc.stderr
+        cfg = json.loads(proc.stdout)
+        assert cfg["claude_model"] == ""
+    finally:
+        fc.clear_state(sid)
+
+
+def test_dispatch_override_preserves_empty_frontier_model_pin() -> None:
+    """An explicit empty --frontier-model clears a session pin during dispatch."""
+    args = frontier_dispatch._build_parser().parse_args(["--frontier-model", "", "task"])
+    assert frontier_dispatch._overrides(args)["frontier_model"] == ""
+
+
+def test_availability_suggestion_is_path_only_and_non_mutating() -> None:
+    """Doctor suggestions are deterministic PATH hints, never auth probes or config writes."""
+    cfg = fc.defaults()
+    before = dict(cfg)
+
+    def grok_only(name: str) -> str | None:
+        return "/mock/grok" if name == "grok" else None
+
+    suggestion = frontier_dispatch.suggest_provider_availability(cfg, lookup=grok_only)
+    assert suggestion is not None
+    assert suggestion["executor"] == "grok"
+    assert suggestion["executor_model"] == "grok-4.5"
+    assert suggestion["frontier_provider"] == "grok"
+    assert suggestion["frontier_model"] == "grok-4.5"
+    assert suggestion["present_provider_clis"] == ["grok"]
+    assert suggestion["missing_configured_clis"] == ["claude", "codex"]
+    assert cfg == before
+
+    def configured_present(name: str) -> str | None:
+        return "/mock/" + name if name in {"codex", "claude"} else None
+
+    assert frontier_dispatch.suggest_provider_availability(
+        cfg, lookup=configured_present
+    ) is None
+    assert "not authentication or model entitlement" in frontier_dispatch.AVAILABILITY_NOTE
+
+
+def test_profile_help_describes_host_led_orchestration() -> None:
+    help_text = " ".join(frontier_dispatch._build_parser().format_help().split())
+    assert "host-led verified orchestration" in help_text
+    assert "never makes it the host lead" in help_text
 
 
 def test_make_verdict_and_fresh_green() -> None:
@@ -910,6 +1053,12 @@ def main() -> int:
         test_cli_can_restore_fast_model_inheritance,
         test_build_body_command_executor,
         test_advisor_prompt_uses_selected_claude_model,
+        test_effective_frontier_model_is_not_hard_wired_to_fable,
+        test_ask_frontier_reports_effective_frontier_model,
+        test_config_refuses_generic_and_provider_model_flag_conflict,
+        test_dispatch_override_preserves_empty_frontier_model_pin,
+        test_availability_suggestion_is_path_only_and_non_mutating,
+        test_profile_help_describes_host_led_orchestration,
         test_make_verdict_and_fresh_green,
         test_state_read_write_merge_clear,
         test_handoff_card_bounded_with_artifact,
