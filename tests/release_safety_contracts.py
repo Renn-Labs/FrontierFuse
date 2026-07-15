@@ -75,6 +75,14 @@ def test_dotenv_secret_assignment_detected() -> None:
         any(f.kind == "DOTENV_SECRET_ASSIGNMENT" for f in indented),
         "indented dotenv assignment not detected",
     )
+    code = "\n".join((
+        "_NON_MODEL_TOKENS = frozenset({",
+        "token = _strip_model_token(value)",
+    ))
+    code_findings = scrub.scan_text("t", "probe.py", code)
+    code_kinds = {f.kind for f in code_findings}
+    _assert("DOTENV_SECRET_ASSIGNMENT" not in code_kinds, code_kinds)
+    _assert("SECRET_ASSIGNMENT" not in code_kinds, code_kinds)
 
 
 def test_provider_token_prefixes_detected() -> None:

@@ -16,7 +16,7 @@ from typing import Callable
 
 import frontier_common as fc
 
-CURRENT_VERSION = "0.3.5"
+CURRENT_VERSION = "0.3.6"
 DEFAULT_UPDATE_URL = (
     "https://raw.githubusercontent.com/Renn-Labs/FrontierFuse/"
     "master/.claude-plugin/plugin.json"

@@ -1,9 +1,9 @@
-# FrontierFuse Architecture (0.3.5)
+# FrontierFuse Architecture (0.3.6)
 
 This document describes the shipped Claude Code plugin and shared checkout surface. The roadmap is
-in `docs/FRONTIERFUSE_EXECUTION_PLAN.md`. Baseline **0.3.5** includes provider-neutral roles, offline
-doctor, quiet updates, reliable configuration, Gemini executor support, and `--executor-model` as
-the primary executor pin (with `--model` as legacy alias).
+in `docs/FRONTIERFUSE_EXECUTION_PLAN.md`. Baseline **0.3.6** includes provider-neutral roles, offline
+doctor, quiet updates, reliable configuration, Gemini executor support, provider-aware model
+discovery, and `--executor-model` as the primary executor pin (with `--model` as legacy alias).
 
 ## Product Contract
 

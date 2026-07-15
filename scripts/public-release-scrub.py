@@ -56,7 +56,8 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?i)^\s*(?:export\s+)?"
             r"[A-Za-z_]*"
             r"(?:API[_-]?KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIALS?|PRIVATE[_-]?KEY)"
-            r"[A-Za-z0-9_]*\s*=\s*['\"]?"
+            r"(?:_[A-Za-z0-9]+)*\s*=\s*['\"]?"
+            r"(?![A-Za-z_][A-Za-z0-9_]*\s*\()"
             r"[A-Za-z0-9+_/=-]{8,}"
         ),
     ),
@@ -67,7 +68,9 @@ PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?i)(?:^|[\s,;{])(?:export\s+)?"
             r"(?:[A-Za-z][A-Za-z0-9_]*_)?"
             r"(?:api[_-]?key|secret|passwd|password|token|access[_-]?key|credentials?)\b"
-            r"\s*[:=]\s*['\"]?[A-Za-z0-9+/_=\-]{12,}"
+            r"\s*[:=]\s*['\"]?"
+            r"(?![A-Za-z_][A-Za-z0-9_]*\s*\()"
+            r"[A-Za-z0-9+/_=\-]{12,}"
         ),
     ),
     ("URL_CREDENTIALS", re.compile(r"https?://[^/\s:@]+:[^@\s]+@")),

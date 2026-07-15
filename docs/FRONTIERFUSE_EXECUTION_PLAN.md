@@ -1,18 +1,18 @@
 # FrontierFuse Execution Plan
 
 This is the durable implementation backlog after the provider-neutral FrontierFuse line. The shipped
-baseline documented here is **0.3.5**. Releases convert independent frontier-model review into
+baseline documented here is **0.3.6**. Releases convert independent frontier-model review into
 sequenced, testable work. A release is complete only when every acceptance gate is backed by fresh
 evidence.
 
 ## Product Contract
 
-FrontierFuse pairs one model that decides with one model that executes, then produces a local,
-verifiable receipt of what happened.
+FrontierFuse configures a managed frontier consult and a managed executor while the host harness
+retains the session lead, then produces a local, verifiable receipt of what happened.
 
 The product has exactly two roles:
 
-- `frontier`: decides, advises, delegates, and reviews evidence.
+- `frontier`: supplies configured managed consultation; it does not replace the host lead.
 - `executor`: performs bounded implementation or research work.
 
 The roles support exactly two profiles:
@@ -61,7 +61,7 @@ Every release must satisfy all applicable gates:
 - [ ] No generated runs, verdicts, provider transcripts, private state, secrets, or private
       absolute paths are tracked.
 
-## Delivered Through 0.3.5
+## Delivered Through 0.3.6
 
 ### Release 0.2.6 - Trust Boundary Correction (Delivered)
 
@@ -165,7 +165,7 @@ Goal: make configuration failures recoverable and readiness reports trustworthy.
 Live auth, model entitlement, CLI compatibility, and probe-failure classification require the
 provider capability contract and remain in `0.4.0`; no default doctor path makes provider calls.
 
-### Releases 0.3.3 – 0.3.5 (Delivered maintenance)
+### Releases 0.3.3 – 0.3.6 (Delivered maintenance)
 
 - [x] **0.3.3** — portable verification contracts (PATH-resolved gate executables across Ubuntu/macOS).
 - [x] **0.3.4** — verification fixture path canonicalization for macOS `/var` aliases and symlinked
@@ -173,6 +173,8 @@ provider capability contract and remain in `0.4.0`; no default doctor path makes
 - [x] **0.3.5** — `--executor-model` as primary executor pin; `--model` retained as legacy alias;
       conflict handling when both are passed; docs/contracts keep profile, frontier, and executor
       decisions separate.
+- [x] **0.3.6** — provider-aware model discovery and doctor suggestions; truthful host-bound
+      workflow/install UX; public-release scrub, denylist, and offline pre-push hardening.
 
 ## Planned Releases
 
@@ -362,9 +364,10 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-**Shipped baseline: `0.3.5`.** Delivered work through 0.3.5 is complete (trust boundary, install/
-doctor/updates, roles, reliable configuration, portability fixes, executor-model alias).
+**Shipped baseline: `0.3.6`.** Delivered work through 0.3.6 is complete (trust boundary, install/
+doctor/updates, roles, reliable configuration, provider-aware model selection, release safety,
+portability fixes, executor-model alias).
 
 **Next planned tranche: `0.4.0` (Provider Adapter Contract).** Releases `0.5.0` through `1.0.0`
 remain pending until their dependencies and evidence gates are satisfied. Docs and install UX may
-improve on the 0.3.5 baseline without claiming unfinished 0.4.0 capabilities.
+improve on the 0.3.6 baseline without claiming unfinished 0.4.0 capabilities.

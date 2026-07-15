@@ -8,6 +8,23 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.6] - 2026-07-15
+
+### Added
+- Added provider-aware effective frontier model reporting, explicit model-flag conflict handling,
+  and local Codex/Grok model-listing metadata without treating CLI output as entitlement proof.
+- Added non-mutating, PATH-only provider availability suggestions to doctor output.
+- Added full Claude Code, Codex, Grok Build, and Gemini CLI installation, update, restart, rollback,
+  uninstall, and doctor guidance with a copy-paste harness setup prompt.
+
+### Changed
+- Clarified the two runtime profiles and the premium-host/deep-advisor/cheap-body arrangement as a
+  composable working pattern rather than a third profile or host-model swap.
+
+### Security
+- Hardened public-release scrub and pre-push gates with a shared artifact denylist, full-history
+  scanning, commit-message checks, fail-closed history read errors, and offline CI coverage.
+
 ## [0.3.5] - 2026-07-13
 
 ### Added
