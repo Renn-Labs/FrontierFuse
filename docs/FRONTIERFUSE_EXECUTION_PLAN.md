@@ -98,7 +98,7 @@ Goal: make the current control loop materially safer and describe its boundary t
 - [x] Create state, run, prompt, response, and verdict files with owner-only permissions.
 - [x] Replace new shell-string verification paths with argv execution.
 - [x] Keep the legacy shell gate only as an explicitly unsafe compatibility path with a warning.
-- [x] Ensure timeout handling terminates the whole process group.
+- [x] Ensure provider-execution timeout handling terminates the whole provider process group.
 
 #### Truthful product surface
 
@@ -177,6 +177,65 @@ provider capability contract and remain in `0.4.0`; no default doctor path makes
       workflow/install UX; public-release scrub, denylist, and offline pre-push hardening.
 
 ## Planned Releases
+
+The milestone sections below define the completion envelope. Work is delivered through the
+following smaller operating releases so each increment can be independently rejected. Planned
+scope is not shipped capability.
+
+| # | Release | Operating outcome |
+|-:|-|-|
+| 1 | `0.3.7` | Guardrail and execution-boundary hardening |
+| 2 | `0.4.0` | Provider Adapter v1 contract and migration |
+| 3 | `0.4.1` | Offline provider capability evidence |
+| 4 | `0.4.2` | Explicit auth, entitlement, and model probes |
+| 5 | `0.4.3` | Effective topology, context crossing, and consent explanation |
+| 6 | `0.5.0` | Receipt v3, leased run identity, and crash journal |
+| 7 | `0.5.1` | Status, receipt inspection, and redacted export |
+| 8 | `0.5.2` | Idempotent resume and artifact retention controls |
+| 9 | `0.6.0` | Core Protocol v1 and wrapper negotiation |
+| 10 | `0.6.1` | Official-surface Codex package |
+| 11 | `0.6.2` | Cross-harness install, update, rollback, and uninstall proof |
+| 12 | `0.7.0` | Compatibility-aware release metadata |
+| 13 | `0.7.1` | Migration-aware stable and preview update guidance |
+| 14 | `0.7.2` | Artifact provenance, checksums, and rollback metadata |
+| 15 | `0.8.0` | Capped managed-controller preview |
+| 16 | `0.8.1` | Bounded depth-one worker pools |
+| 17 | `0.8.2` | Matched-cost evidence and explainable local presets |
+| 18 | `0.9.0` | Release candidate and contract freeze |
+| 19 | `0.9.1` | Observation-window fixes only |
+| 20 | `1.0.0` | Stable compatibility and evidence contract |
+
+These rows are an operating decomposition, not a promise to publish twenty tags. A hardening row
+with no independently valuable accepted delta folds into its milestone instead of shipping only to
+preserve the count. After the adapter boundary, the product spine (`0.4.x` -> `0.5.x` -> `0.8.x`)
+and distribution spine (`0.4.x` -> `0.6.x` -> `0.7.x`) may develop in parallel, but both must
+converge at `0.9.0`; no lane may bypass its own predecessor.
+
+### Release 0.3.7 - Guardrail and Execution Boundary Hardening
+
+Goal: close confirmed safety gaps before introducing the provider adapter boundary.
+
+#### Tasks
+
+- [ ] Cover mutating host-tool classes fail-closed while preserving an explicit narrow read-only
+      allow policy; continue to describe hooks as workflow guardrails, not a sandbox.
+- [ ] Terminate the complete verification-gate process group on timeout and interruption, matching
+      the already-delivered provider-execution cleanup behavior.
+- [ ] Enforce validated hard task-count and provider/gate output limits during execution rather
+      than clipping only after unbounded buffering.
+- [ ] Normalize timeout, crash, and truncation evidence without exposing prompts or secrets.
+- [ ] Keep interrupted active markers fail-closed and provide an explicit recovery diagnosis;
+      durable leased recovery remains in `0.5.0`.
+
+#### Acceptance evidence
+
+- [ ] Hostile tool fixtures cannot mutate through uncovered armed tool classes.
+- [ ] Timed-out gates and providers leave no live descendant process.
+- [ ] Output and task-count limits cannot be exceeded in fake-process stress tests.
+- [ ] All existing offline contract suites remain GREEN.
+
+Non-goals: provider adapter migration, automatic stale-run recovery, managed controller, new
+provider, versioned role graph.
 
 ### Release 0.4.0 - Provider Adapter Contract (Next tranche)
 
@@ -269,6 +328,8 @@ distribution where official packaging surfaces support it.
 - [ ] Publish checksummed release metadata with schema, protocol, channel, and migration notes.
 - [ ] Prefer native harness update metadata where it exists.
 - [ ] Add a Grok package only if current official Grok packaging supports the required contract.
+- [ ] Build `0.7.2` artifact-provenance and rollback checks against offline fixtures before H2;
+      require fresh-environment verification against public artifacts only after H2 authority.
 
 #### Acceptance evidence
 
@@ -291,13 +352,15 @@ additional cost and latency.
 - [ ] Add hard call, concurrency, retry, timeout, and artifact caps.
 - [ ] Add explicit entitlement probes with preview-aware failure states.
 - [ ] Add Fable/Grok and GPT-5.6 Sol/Grok recipes only when locally entitled.
-- [ ] Record provider-reported usage when available and label all estimates.
-- [ ] Prevent uncontrolled recursive delegation and fan-out.
+- [ ] Record provider-reported usage when available; never present inferred token or dollar values
+      as provider-reported evidence.
+- [ ] Deny recursive delegation before `1.0.0`; keep preview worker pools depth-one and capped.
 - [ ] Define a representative benchmark set before evaluating quality.
 
 #### Acceptance evidence
 
-- [ ] Run at least 30 representative tasks at matched cost.
+- [ ] Run at least 30 representative tasks with frozen inputs; claim matched cost only where
+      provider-reported usage supports the comparison.
 - [ ] Managed mode improves verified completion by at least 10 percentage points or remains
       experimental.
 - [ ] No benchmark run exceeds configured fan-out or retry limits.
@@ -315,7 +378,8 @@ Goal: freeze the support contract and prove upgrades before declaring stability.
 - [ ] Publish the complete support, compatibility, privacy, and threat-model documentation.
 - [ ] Run independent product, security, migration, and accessibility reviews.
 - [ ] Exercise rollback from every supported install path.
-- [ ] Run the full 0.2.5-to-0.9.0 migration matrix.
+- [ ] Run the full supported-baseline migration matrix, including reproducible `0.3.0` and `0.3.6`
+      fixtures; include `0.2.5` only if its exact artifact or commit is retained and reproducible.
 - [ ] Consider renaming the repository only after old URLs and marketplace installs remain green.
 - [ ] Keep plugin ID, commands, paths, and legacy environment variables unchanged.
 - [ ] Open a 30-day release-candidate observation window.
@@ -323,7 +387,8 @@ Goal: freeze the support contract and prove upgrades before declaring stability.
 #### Acceptance evidence
 
 - [ ] No unresolved P0/P1 security, migration, data-loss, or installation issue for 30 days.
-- [ ] Upgrade from 0.2.5 passes on every supported harness and OS.
+- [ ] Upgrade and rollback from every declared reproducible baseline pass on every supported
+      harness and OS.
 - [ ] Old repository URLs and install commands remain valid after any rename.
 
 Non-goals: plugin-ID rename, new provider, large new feature, legacy removal.
@@ -368,6 +433,8 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 doctor/updates, roles, reliable configuration, provider-aware model selection, release safety,
 portability fixes, executor-model alias).
 
-**Next planned tranche: `0.4.0` (Provider Adapter Contract).** Releases `0.5.0` through `1.0.0`
-remain pending until their dependencies and evidence gates are satisfied. Docs and install UX may
-improve on the 0.3.6 baseline without claiming unfinished 0.4.0 capabilities.
+**Next planned tranche: `0.3.7` (Guardrail and Execution Boundary Hardening), followed by `0.4.0`
+(Provider Adapter Contract).** All later operating releases remain pending until their predecessor
+dependencies and evidence gates are satisfied. Isolated candidate branches may be built in
+parallel, but they do not integrate out of order and do not change version carriers. Docs and
+install UX may improve on the 0.3.6 baseline without claiming unfinished capabilities.
