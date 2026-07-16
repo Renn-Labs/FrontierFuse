@@ -1,13 +1,14 @@
 {
-  "description": "FrontierFuse orchestrator-mode workflow guardrail + frozen snapshot-bound verifier. Inert unless a session is armed via `frontier-dispatch arm --gate \"…\"` (host freezes verifier argv/cwd); honours FRONTIER_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1. Not a sandbox.",
+  "description": "FrontierFuse orchestrator-mode workflow guardrail + frozen snapshot-bound verifier. Inert unless a session is armed via `frontier-dispatch arm --gate \"…\"` (host freezes verifier argv/cwd); honours FRONTIER_GUARDS_OFF=1 / CLAUDE_GUARDS_OFF=1. Not a sandbox. PreToolUse matcher covers all tools so armed policy can fail closed outside the explicit read-only allowlist. Handlers use official Claude Code exec form (command + args; no shell).",
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/frontier_gate.py",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/frontier_gate.py"],
             "timeout": 10
           }
         ]
@@ -19,7 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PLUGIN_ROOT\"/hooks/frontier_verify_gate.py",
+            "command": "python3",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/frontier_verify_gate.py"],
             "timeout": 10
           }
         ]

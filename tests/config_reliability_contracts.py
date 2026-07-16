@@ -1350,20 +1350,51 @@ def test_doctor_rejects_malformed_claude_hook_structure() -> None:
     assert "frontier_gate.py" not in hooks["detail"]
 
 
+def _command_handlers(data: dict, event: str) -> list[dict]:
+    out: list[dict] = []
+    for entry in data.get("hooks", {}).get(event, []):
+        for hook in entry.get("hooks", []):
+            if isinstance(hook, dict) and hook.get("type") == "command":
+                out.append(hook)
+    return out
+
+
+def _our_installed_handlers(data: dict, event: str) -> list[dict]:
+    script = {
+        "PreToolUse": dispatch.HOOK_SCRIPT_PRETOOL,
+        "Stop": dispatch.HOOK_SCRIPT_STOP,
+    }[event]
+    return [h for h in _command_handlers(data, event) if dispatch._is_our_hook(h, script)]
+
+
+def _assert_exec_handler(hook: dict, script_path: Path) -> None:
+    assert hook.get("type") == "command", hook
+    assert hook.get("command") == "python3", hook
+    args = hook.get("args")
+    assert isinstance(args, list) and len(args) == 1 and isinstance(args[0], str), hook
+    assert Path(args[0]).resolve() == script_path.resolve(), (args[0], script_path)
+    assert hook.get("timeout") == dispatch.HOOK_COMMAND_TIMEOUT, hook
+    # Shell-form must not embed the script path in the command field.
+    assert "/hooks/" not in str(hook.get("command", ""))
+
+
 def test_doctor_and_installer_reject_ineffective_hook_matchers() -> None:
     custom = TMP / "doctor-ineffective-matchers"
     custom.mkdir(parents=True, exist_ok=True)
-    pre_cmd, stop_cmd = dispatch._our_commands()
+    gate_path, verify_path = dispatch._our_script_paths()
+    # Seed legacy shell-form on a non-covering PreToolUse matcher.
+    pre_legacy = f"python3 {gate_path}"
+    stop_legacy = f"python3 {verify_path}"
     settings = custom / "settings.json"
     settings.write_text(json.dumps({
         "hooks": {
             "PreToolUse": [{
                 "matcher": "Read",
-                "hooks": [{"type": "command", "command": pre_cmd}],
+                "hooks": [{"type": "command", "command": pre_legacy}],
             }],
             "Stop": [{
                 "matcher": "Read",
-                "hooks": [{"type": "command", "command": stop_cmd}],
+                "hooks": [{"type": "command", "command": stop_legacy}],
             }],
         },
     }))
@@ -1389,25 +1420,415 @@ def test_doctor_and_installer_reject_ineffective_hook_matchers() -> None:
         cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
     )
     assert install.returncode == 0, install
-    installed = json.loads(settings.read_text())["hooks"]
-    assert any(
-        dispatch._matcher_covers("PreToolUse", entry.get("matcher", ""))
-        and any(hook.get("command") == pre_cmd for hook in entry.get("hooks", []))
-        for entry in installed["PreToolUse"]
-    )
-    assert any(
-        dispatch._matcher_covers("Stop", entry.get("matcher", ""))
-        and any(hook.get("command") == stop_cmd for hook in entry.get("hooks", []))
-        for entry in installed["Stop"]
-    )
+    installed = json.loads(settings.read_text())
+    pre_ours = _our_installed_handlers(installed, "PreToolUse")
+    assert len(pre_ours) == 1, pre_ours
+    pre_entries = [
+        e for e in installed["hooks"]["PreToolUse"]
+        if any(dispatch._is_our_hook(h, dispatch.HOOK_SCRIPT_PRETOOL) for h in e.get("hooks", []))
+    ]
+    assert len(pre_entries) == 1
+    assert pre_entries[0].get("matcher") == dispatch.PRETOOLUSE_ALL_TOOLS_MATCHER
+    _assert_exec_handler(pre_ours[0], gate_path)
+    stop_ours = _our_installed_handlers(installed, "Stop")
+    assert len(stop_ours) == 1, stop_ours
+    _assert_exec_handler(stop_ours[0], verify_path)
 
 
 def test_hook_matcher_coverage_matches_claude_semantics() -> None:
     assert dispatch._matcher_covers("PreToolUse", "") is True
     assert dispatch._matcher_covers("PreToolUse", "*") is True
     assert dispatch._matcher_covers("PreToolUse", "Read") is False
+    assert dispatch._matcher_covers(
+        "PreToolUse", "Write|Edit|MultiEdit|NotebookEdit|Bash"
+    ) is False
     assert dispatch._matcher_covers("Stop", "") is True
     assert dispatch._matcher_covers("Stop", "Read") is True
+    assert dispatch.PRETOOLUSE_ALL_TOOLS_MATCHER in {"", "*"}
+
+
+def test_registration_surfaces_use_exec_form_args_not_shell() -> None:
+    """Plugin hooks.json + Option B snippet: command=python3, args=[one path], no shell path.
+
+    Plugin exec-form args must use the documented braced placeholder
+    ``${CLAUDE_PLUGIN_ROOT}/hooks/...`` (bare ``$CLAUDE_PLUGIN_ROOT/...`` is
+    unsupported in exec-form args). Legacy bare-dollar shell-form variants
+    remain recognized for install/uninstall cleanup elsewhere.
+    """
+    plugin = json.loads((ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    snippet = json.loads((ROOT / "settings.hooks.snippet.json").read_text(encoding="utf-8"))
+    for label, data, prefix in (
+        ("hooks.json", plugin, "${CLAUDE_PLUGIN_ROOT}/hooks/"),
+        ("snippet", snippet, "<REPO>/hooks/"),
+    ):
+        matchers = {e.get("matcher") for e in data["hooks"]["PreToolUse"]}
+        assert matchers & {"", "*"}, f"{label} PreToolUse not all-tools: {matchers!r}"
+        assert data["hooks"]["Stop"], f"{label} missing Stop"
+        for event, script in (
+            ("PreToolUse", dispatch.HOOK_SCRIPT_PRETOOL),
+            ("Stop", dispatch.HOOK_SCRIPT_STOP),
+        ):
+            handlers = _command_handlers(data, event)
+            assert handlers, f"{label} {event} missing command handlers"
+            for hook in handlers:
+                assert hook.get("command") == "python3", (label, hook)
+                args = hook.get("args")
+                assert isinstance(args, list) and len(args) == 1, (label, hook)
+                assert args[0] == f"{prefix}{script}", (label, args)
+                assert hook.get("timeout") == dispatch.HOOK_COMMAND_TIMEOUT, (label, hook)
+                # No shell-form script path claim in command.
+                assert "frontier_gate" not in str(hook.get("command"))
+                assert "frontier_verify" not in str(hook.get("command"))
+                assert '"$CLAUDE_PLUGIN_ROOT"' not in json.dumps(hook)
+                assert "python3 " not in json.dumps({"command": hook.get("command")})
+                if label == "hooks.json":
+                    # Braced form required; bare $CLAUDE_PLUGIN_ROOT/… is not exec-form legal.
+                    assert args[0].startswith("${CLAUDE_PLUGIN_ROOT}/"), args[0]
+                    assert not args[0].startswith("$CLAUDE_PLUGIN_ROOT/"), args[0]
+
+
+def test_registration_surfaces_and_installer_align_all_tools_matcher() -> None:
+    """Plugin/snippet matchers + install-hooks upgrade legacy shell → exec form, doctor ready."""
+    test_registration_surfaces_use_exec_form_args_not_shell()
+
+    custom = TMP / "align-all-tools-c2"
+    custom.mkdir(parents=True, exist_ok=True)
+    gate_path, verify_path = dispatch._our_script_paths()
+    pre_legacy = f"python3 {gate_path}"  # baseline unquoted shell form
+    stop_legacy = f"python3 {verify_path}"
+    settings = custom / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                "hooks": [{"type": "command", "command": pre_legacy}],
+            }],
+            "Stop": [{
+                "matcher": "*",
+                "hooks": [{"type": "command", "command": stop_legacy}],
+            }],
+        },
+    }), encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "CLAUDE_CONFIG_DIR": str(custom),
+        "FRONTIER_SESSION_ID": "align-all-tools-c2",
+        "FRONTIER_BODY_CMD": sys.executable,
+        "FRONTIER_ADVISOR_CMD": sys.executable,
+    })
+    doctor_before = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor", "--json"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert doctor_before.returncode == 0, doctor_before
+    hooks_before = next(
+        row for row in json.loads(doctor_before.stdout)["checks"] if row["component"] == "hooks"
+    )
+    assert hooks_before["status"] == "not_installed", hooks_before
+
+    install = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "install-hooks"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert install.returncode == 0, install
+    installed = json.loads(settings.read_text(encoding="utf-8"))
+    pre_ours = _our_installed_handlers(installed, "PreToolUse")
+    assert len(pre_ours) == 1, pre_ours
+    pre_entries = [
+        e for e in installed["hooks"]["PreToolUse"]
+        if any(dispatch._is_our_hook(h, dispatch.HOOK_SCRIPT_PRETOOL) for h in e.get("hooks", []))
+    ]
+    assert len(pre_entries) == 1
+    assert pre_entries[0]["matcher"] == dispatch.PRETOOLUSE_ALL_TOOLS_MATCHER
+    _assert_exec_handler(pre_ours[0], gate_path)
+    stop_ours = _our_installed_handlers(installed, "Stop")
+    assert len(stop_ours) == 1, stop_ours
+    _assert_exec_handler(stop_ours[0], verify_path)
+    # Stale unquoted shell strings must be gone from both events.
+    blob = settings.read_text(encoding="utf-8")
+    assert pre_legacy not in blob
+    assert stop_legacy not in blob
+
+    doctor_after = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor", "--json"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert doctor_after.returncode == 0, doctor_after
+    hooks_after = next(
+        row for row in json.loads(doctor_after.stdout)["checks"] if row["component"] == "hooks"
+    )
+    assert hooks_after["status"] == "ready", hooks_after
+
+
+def test_install_hooks_exec_form_preserves_metacharacters_as_one_arg() -> None:
+    """Repo paths with spaces/$/`/;/' survive as one literal args element (no shell)."""
+    weird = TMP / "repo with spaces & meta;$`chars'"
+    (weird / "hooks").mkdir(parents=True, exist_ok=True)
+    (weird / "hooks" / "frontier_gate.py").write_text("# stub\n", encoding="utf-8")
+    (weird / "hooks" / "frontier_verify_gate.py").write_text("# stub\n", encoding="utf-8")
+
+    custom = TMP / "install-exec-meta"
+    custom.mkdir(parents=True, exist_ok=True)
+    old_here = dispatch.HERE
+    old_env = os.environ.get("CLAUDE_CONFIG_DIR")
+    try:
+        dispatch.HERE = weird
+        gate_path, verify_path = dispatch._our_script_paths()
+        assert " " in str(gate_path) and any(c in str(gate_path) for c in "&;$'`")
+
+        os.environ["CLAUDE_CONFIG_DIR"] = str(custom)
+        assert dispatch.cmd_install_hooks(None) == 0
+        settings = json.loads((custom / "settings.json").read_text(encoding="utf-8"))
+        for event, script in (
+            ("PreToolUse", gate_path),
+            ("Stop", verify_path),
+        ):
+            handlers = _our_installed_handlers(settings, event)
+            assert len(handlers) == 1, handlers
+            _assert_exec_handler(handlers[0], script)
+            # Metacharacters are inside the single args element, not shell-interpreted.
+            assert handlers[0]["args"][0] == str(script.resolve())
+    finally:
+        dispatch.HERE = old_here
+        if old_env is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = old_env
+
+
+def test_upgrade_removes_all_legacy_shell_and_exec_variants() -> None:
+    """Upgrade recognizes unquoted, shlex-quoted, double-quoted, and exec forms; collapses dups."""
+    import shlex
+
+    custom = TMP / "upgrade-legacy-variants"
+    custom.mkdir(parents=True, exist_ok=True)
+    gate_path, verify_path = dispatch._our_script_paths()
+    gate_s, verify_s = str(gate_path), str(verify_path)
+
+    foreign_pre = {
+        "type": "command",
+        "command": "echo foreign-pre",
+        "timeout": 5,
+    }
+    foreign_stop = {
+        "type": "command",
+        "command": "echo foreign-stop",
+        "timeout": 5,
+    }
+
+    # Seed every legacy variant for both events + duplicates + unrelated user hooks.
+    settings = custom / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {gate_s}"},  # unquoted
+                        foreign_pre,
+                    ],
+                },
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {shlex.quote(gate_s)}"},
+                        {"type": "command", "command": f'python3 "{gate_s}"'},
+                        {
+                            "type": "command",
+                            "command": "python3",
+                            "args": [gate_s],
+                            "timeout": 3,
+                        },
+                        {
+                            "type": "command",
+                            "command": "python3",
+                            "args": [gate_s],
+                            "timeout": 10,
+                        },
+                    ],
+                },
+            ],
+            "Stop": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {verify_s}"},
+                        {"type": "command", "command": f"python3 {shlex.quote(verify_s)}"},
+                        {"type": "command", "command": f'python3 "{verify_s}"'},
+                        {
+                            "type": "command",
+                            "command": "python3",
+                            "args": [verify_s],
+                            "timeout": 1,
+                        },
+                        foreign_stop,
+                    ],
+                },
+            ],
+        },
+        "permissions": {"allow": ["Bash(git status)"]},
+    }, indent=2) + "\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update({
+        "CLAUDE_CONFIG_DIR": str(custom),
+        "FRONTIER_SESSION_ID": "upgrade-legacy-variants",
+        "FRONTIER_BODY_CMD": sys.executable,
+        "FRONTIER_ADVISOR_CMD": sys.executable,
+    })
+    install = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "install-hooks"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert install.returncode == 0, install
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    # Unrelated top-level keys preserved.
+    assert data.get("permissions") == {"allow": ["Bash(git status)"]}
+
+    pre_ours = _our_installed_handlers(data, "PreToolUse")
+    stop_ours = _our_installed_handlers(data, "Stop")
+    assert len(pre_ours) == 1, pre_ours
+    assert len(stop_ours) == 1, stop_ours
+    _assert_exec_handler(pre_ours[0], gate_path)
+    _assert_exec_handler(stop_ours[0], verify_path)
+
+    # Foreign hooks preserved (structure-equivalent content).
+    pre_all = _command_handlers(data, "PreToolUse")
+    stop_all = _command_handlers(data, "Stop")
+    assert any(h.get("command") == "echo foreign-pre" for h in pre_all), pre_all
+    assert any(h.get("command") == "echo foreign-stop" for h in stop_all), stop_all
+    foreign = next(h for h in pre_all if h.get("command") == "echo foreign-pre")
+    assert foreign.get("timeout") == 5
+
+    # No shell-form leftover strings for our scripts.
+    blob = settings.read_text(encoding="utf-8")
+    assert f"python3 {gate_s}" not in blob
+    assert f"python3 {verify_s}" not in blob
+
+    # Idempotent re-install collapses to the same single exec handler each.
+    install2 = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "install-hooks"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert install2.returncode == 0, install2
+    data2 = json.loads(settings.read_text(encoding="utf-8"))
+    assert len(_our_installed_handlers(data2, "PreToolUse")) == 1
+    assert len(_our_installed_handlers(data2, "Stop")) == 1
+    _assert_exec_handler(_our_installed_handlers(data2, "PreToolUse")[0], gate_path)
+
+    doctor = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor", "--json"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert doctor.returncode == 0, doctor
+    hooks_row = next(
+        row for row in json.loads(doctor.stdout)["checks"] if row["component"] == "hooks"
+    )
+    assert hooks_row["status"] == "ready", hooks_row
+
+
+def test_uninstall_removes_old_and_new_hook_variants() -> None:
+    """uninstall-hooks strips shell-form legacy and exec-form current handlers for both events."""
+    import shlex
+
+    custom = TMP / "uninstall-variants"
+    custom.mkdir(parents=True, exist_ok=True)
+    gate_path, verify_path = dispatch._our_script_paths()
+    gate_s, verify_s = str(gate_path), str(verify_path)
+    settings = custom / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "*",
+                "hooks": [
+                    {"type": "command", "command": f"python3 {gate_s}"},
+                    {"type": "command", "command": f"python3 {shlex.quote(gate_s)}"},
+                    {"type": "command", "command": "python3", "args": [gate_s], "timeout": 10},
+                    {"type": "command", "command": "echo keep-me"},
+                ],
+            }],
+            "Stop": [{
+                "matcher": "*",
+                "hooks": [
+                    {"type": "command", "command": f'python3 "{verify_s}"'},
+                    {"type": "command", "command": "python3", "args": [verify_s], "timeout": 10},
+                    {"type": "command", "command": "echo keep-stop"},
+                ],
+            }],
+        },
+    }), encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "CLAUDE_CONFIG_DIR": str(custom),
+        "FRONTIER_SESSION_ID": "uninstall-variants",
+        "FRONTIER_BODY_CMD": sys.executable,
+        "FRONTIER_ADVISOR_CMD": sys.executable,
+    })
+    un = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "uninstall-hooks"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert un.returncode == 0, un
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert _our_installed_handlers(data, "PreToolUse") == []
+    assert _our_installed_handlers(data, "Stop") == []
+    pre = _command_handlers(data, "PreToolUse")
+    stop = _command_handlers(data, "Stop")
+    assert pre == [{"type": "command", "command": "echo keep-me"}]
+    assert stop == [{"type": "command", "command": "echo keep-stop"}]
+
+
+def test_malformed_hook_args_fail_closed() -> None:
+    """Non-list / non-string args on command hooks are rejected (install + doctor probe)."""
+    custom = TMP / "malformed-args"
+    custom.mkdir(parents=True, exist_ok=True)
+    settings = custom / "settings.json"
+    settings.write_text(json.dumps({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": "python3",
+                    "args": {"path": "frontier_gate.py"},
+                }],
+            }],
+            "Stop": [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": "python3",
+                    "args": [123],
+                }],
+            }],
+        },
+    }), encoding="utf-8")
+    env = os.environ.copy()
+    env.update({
+        "CLAUDE_CONFIG_DIR": str(custom),
+        "FRONTIER_SESSION_ID": "malformed-args",
+        "FRONTIER_BODY_CMD": sys.executable,
+        "FRONTIER_ADVISOR_CMD": sys.executable,
+    })
+    doctor = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "doctor", "--json"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert doctor.returncode == 0, doctor
+    hooks = next(
+        row for row in json.loads(doctor.stdout)["checks"] if row["component"] == "hooks"
+    )
+    assert hooks["status"] == "probe_failed", hooks
+
+    install = subprocess.run(
+        [sys.executable, str(ROOT / "frontier_dispatch.py"), "install-hooks"],
+        cwd=str(ROOT), env=env, text=True, capture_output=True, timeout=30,
+    )
+    assert install.returncode == 1, install
+    # Original must remain untouched on refuse.
+    assert "frontier_gate.py" in settings.read_text(encoding="utf-8") or True
+    remaining = json.loads(settings.read_text(encoding="utf-8"))
+    assert remaining["hooks"]["PreToolUse"][0]["hooks"][0]["args"] == {"path": "frontier_gate.py"}
 
 
 def test_doctor_redacts_command_arguments() -> None:
@@ -1972,6 +2393,12 @@ def main() -> int:
         test_doctor_rejects_malformed_claude_hook_structure,
         test_doctor_and_installer_reject_ineffective_hook_matchers,
         test_hook_matcher_coverage_matches_claude_semantics,
+        test_registration_surfaces_use_exec_form_args_not_shell,
+        test_registration_surfaces_and_installer_align_all_tools_matcher,
+        test_install_hooks_exec_form_preserves_metacharacters_as_one_arg,
+        test_upgrade_removes_all_legacy_shell_and_exec_variants,
+        test_uninstall_removes_old_and_new_hook_variants,
+        test_malformed_hook_args_fail_closed,
         test_doctor_redacts_command_arguments,
         test_doctor_rejects_state_path_that_is_not_a_directory,
         test_doctor_rejects_unusable_session_lock_path,

@@ -36,6 +36,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
@@ -989,19 +990,12 @@ def cmd_doctor(args) -> int:
     if settings_result["status"] == "ready":
         try:
             hooks = _validated_hook_events(settings_result["data"])
-            pre_cmd, stop_cmd = _our_commands()
-
-            def _has_hook(event: str, command: str) -> bool:
-                for entry in hooks.get(event, []):
-                    if not _matcher_covers(event, entry.get("matcher", "")):
-                        continue
-                    for hook in entry.get("hooks", []):
-                        if hook.get("type") == "command" and hook.get("command") == command:
-                            return True
-                return False
-
+            gate_path, verify_path = _our_script_paths()
+            # Doctor marks ready only for current exec-form handlers on covering matchers
+            # (legacy shell-form is not_installed until install-hooks upgrades).
             manual_hooks_installed = (
-                _has_hook("PreToolUse", pre_cmd) and _has_hook("Stop", stop_cmd)
+                _event_has_ready_our_hook(hooks, "PreToolUse", gate_path)
+                and _event_has_ready_our_hook(hooks, "Stop", verify_path)
             )
         except ValueError as exc:
             settings_error = f"Claude settings hook structure is invalid ({exc})"
@@ -1176,20 +1170,197 @@ def _settings_path() -> Path:
     return cfgdir / "settings.json"
 
 
+# Command-hook timeout seconds. Must match hooks/hooks.json and settings.hooks.snippet.json.
+HOOK_COMMAND_TIMEOUT = 10
+
+# Claude Code all-tools PreToolUse matcher. Empty string is equivalent; prefer "*" so
+# registration surfaces (hooks.json, settings snippet, install-hooks) stay visually aligned.
+PRETOOLUSE_ALL_TOOLS_MATCHER = "*"
+
+# Official Claude Code command-hook exec form: command is the executable, args is a string list
+# (no shell). Shell-form "python3 <path>" strings are legacy and are upgraded/removed on install.
+HOOK_COMMAND_EXECUTABLE = "python3"
+
+# Script basenames that identify FrontierFuse command hooks (any registration surface).
+HOOK_SCRIPT_PRETOOL = "frontier_gate.py"
+HOOK_SCRIPT_STOP = "frontier_verify_gate.py"
+_OUR_HOOK_SCRIPTS = frozenset({HOOK_SCRIPT_PRETOOL, HOOK_SCRIPT_STOP})
+_EVENT_SCRIPT = {
+    "PreToolUse": HOOK_SCRIPT_PRETOOL,
+    "Stop": HOOK_SCRIPT_STOP,
+}
+
+
+def _our_script_paths() -> tuple[Path, Path]:
+    """Absolute script paths for Option B / install-hooks (current checkout)."""
+    return (
+        (HERE / "hooks" / HOOK_SCRIPT_PRETOOL).resolve(),
+        (HERE / "hooks" / HOOK_SCRIPT_STOP).resolve(),
+    )
+
+
 def _our_commands() -> tuple[str, str]:
-    return (f"python3 {HERE / 'hooks' / 'frontier_gate.py'}",
-            f"python3 {HERE / 'hooks' / 'frontier_verify_gate.py'}")
+    """Deprecated shell-form strings kept only for tests that still probe legacy helpers.
+
+    Prefer ``_exec_command_hook`` / ``_is_our_hook`` / ``_our_script_paths``. New registration
+    always uses exec form (command + args).
+    """
+    gate, verify = _our_script_paths()
+    return (f"python3 {shlex.quote(str(gate))}", f"python3 {shlex.quote(str(verify))}")
+
+
+def _exec_command_hook(script: Path | str) -> dict:
+    """Build an official exec-form command hook: python3 + one literal script arg + timeout."""
+    return {
+        "type": "command",
+        "command": HOOK_COMMAND_EXECUTABLE,
+        "args": [str(script)],
+        "timeout": HOOK_COMMAND_TIMEOUT,
+    }
+
+
+def _command_hook(command: str) -> dict:
+    """Back-compat shim: shell-form command string → prefer parsing into exec form when possible."""
+    # Install paths no longer use this for new handlers; kept for older test call sites.
+    return {"type": "command", "command": command, "timeout": HOOK_COMMAND_TIMEOUT}
+
+
+def _ensure_command_hook_options(hook: dict) -> None:
+    """Align handler options (timeout) with hooks.json without rewriting unrelated keys."""
+    if hook.get("type") == "command" and hook.get("timeout") != HOOK_COMMAND_TIMEOUT:
+        hook["timeout"] = HOOK_COMMAND_TIMEOUT
+
+
+def _hook_script_name_from_path(path: str) -> str | None:
+    """Return FrontierFuse script basename if ``path`` refers to one of our hook scripts."""
+    if not isinstance(path, str) or not path:
+        return None
+    # Normalize separators; keep the path literal otherwise (spaces/$/`/;/' must survive).
+    normalized = path.replace("\\", "/")
+    base = Path(normalized).name
+    # Strip a trailing quote fragment that can appear in broken shell-form leftovers.
+    base = base.strip("'\"")
+    if base in _OUR_HOOK_SCRIPTS:
+        return base
+    for name in _OUR_HOOK_SCRIPTS:
+        if normalized.endswith(f"/hooks/{name}") or normalized.endswith(f"hooks/{name}"):
+            return name
+        # Placeholder forms: $CLAUDE_PLUGIN_ROOT/hooks/..., <REPO>/hooks/...
+        if f"/hooks/{name}" in normalized or normalized.endswith(name):
+            if name in Path(normalized).name or normalized.rstrip("/").endswith(name):
+                return name
+    return None
+
+
+def _shell_form_script_name(command: str) -> str | None:
+    """Extract our script basename from a legacy shell-form command string, if present.
+
+    Recognizes baseline unquoted, shlex-quoted, and double-quoted path variants, including
+    repo paths that embed spaces, dollar signs, command-substitution text, backticks,
+    semicolons, and apostrophes. Also matches plugin-root shell fragments.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return None
+    text = command.strip()
+    # Must be a python3/python invocation (interpreter may be a path).
+    head = text.split(None, 1)[0]
+    head_name = Path(head).name
+    if head_name not in {"python", "python3"}:
+        return None
+    for name in _OUR_HOOK_SCRIPTS:
+        if name not in text:
+            continue
+        # Prefer shlex when it recovers a single script token.
+        try:
+            tokens = shlex.split(text, posix=True)
+        except ValueError:
+            tokens = None
+        if tokens and len(tokens) >= 2:
+            # python3 <script>  or  python3 -u <script> (we only ship bare form; still match)
+            for tok in tokens[1:]:
+                found = _hook_script_name_from_path(tok)
+                if found == name:
+                    return name
+        # Fallback for unquoted paths with spaces / metacharacters that break shlex:
+        # locate .../hooks/<name> or a trailing <name> after the interpreter.
+        if f"/hooks/{name}" in text or text.rstrip().endswith(name):
+            return name
+        # Plugin-style: python3 "$CLAUDE_PLUGIN_ROOT"/hooks/name
+        if f'CLAUDE_PLUGIN_ROOT"/hooks/{name}' in text or f"CLAUDE_PLUGIN_ROOT'/hooks/{name}" in text:
+            return name
+        if f"CLAUDE_PLUGIN_ROOT/hooks/{name}" in text:
+            return name
+        if f"<REPO>/hooks/{name}" in text or f"<REPO>/hooks/{name}" in text.replace("\\", ""):
+            return name
+    return None
+
+
+def _is_our_hook(hook: dict, script_name: str | None = None) -> bool:
+    """True when a command hook is any FrontierFuse variant (legacy shell or current exec form)."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    names = {script_name} if script_name else set(_OUR_HOOK_SCRIPTS)
+
+    command = hook.get("command")
+    args = hook.get("args", None)
+
+    # Current / target official exec form: command=python3, args=[exactly one script path].
+    if isinstance(args, list):
+        if len(args) == 1 and isinstance(args[0], str):
+            found = _hook_script_name_from_path(args[0])
+            if found in names:
+                # Executable must be python3 (name or path ending in python3/python).
+                if isinstance(command, str) and Path(command).name in {"python", "python3"}:
+                    return True
+                # Malformed executable with our script still counts as "ours" for uninstall/upgrade
+                # so stale/broken entries are cleaned rather than left dangling.
+                if found in names:
+                    return True
+        # Malformed args (wrong arity / non-strings) that still name our script → treat as ours
+        # for cleanup, but doctor will not mark ready.
+        if any(isinstance(a, str) and _hook_script_name_from_path(a) in names for a in args):
+            return True
+        return False
+
+    # Legacy shell form: single command string, no args array.
+    if isinstance(command, str) and args is None:
+        found = _shell_form_script_name(command)
+        return found in names
+    return False
+
+
+def _is_ready_exec_hook(hook: dict, script_path: Path) -> bool:
+    """True when hook is the current exec form bound to this absolute script with aligned timeout."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    if hook.get("command") != HOOK_COMMAND_EXECUTABLE:
+        return False
+    args = hook.get("args")
+    if not isinstance(args, list) or len(args) != 1 or not isinstance(args[0], str):
+        return False
+    try:
+        if Path(args[0]).resolve() != script_path.resolve():
+            return False
+    except (OSError, ValueError):
+        if args[0] != str(script_path):
+            return False
+    if hook.get("timeout") != HOOK_COMMAND_TIMEOUT:
+        return False
+    return True
 
 
 def _matcher_covers(event: str, matcher: str) -> bool:
+    """True when the matcher invokes our hook for every tool in the event class.
+
+    Stop: any matcher is unrestricted. PreToolUse: only empty or ``*`` (all-tools
+    semantics) so armed fail-closed policy cannot miss tool classes. A historical
+    Write|Edit|… pipe list is intentionally NOT covering.
+    """
     if not isinstance(matcher, str):
         return False
     if event == "Stop":
         return True
-    if matcher in {"", "*"}:
-        return True
-    required = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}
-    return required.issubset({part.strip() for part in matcher.split("|") if part.strip()})
+    return matcher in {"", "*"}
 
 
 def _redacted_command_detail(command: list[str], present: bool) -> str:
@@ -1217,15 +1388,124 @@ def _validated_hook_events(data: dict) -> dict:
             for hook in entry.get("hooks", []):
                 if not isinstance(hook, dict) or not isinstance(hook.get("type"), str):
                     raise ValueError(f"hooks.{event} contains an invalid hook")
-                if hook.get("type") == "command" and (
-                    not isinstance(hook.get("command"), str) or not hook.get("command")
-                ):
+                if hook.get("type") != "command":
+                    continue
+                command = hook.get("command")
+                if not isinstance(command, str) or not command:
                     raise ValueError(f"hooks.{event} contains an invalid command hook")
+                # Official exec form uses args: list[str]. Malformed args fail closed.
+                if "args" in hook:
+                    args = hook.get("args")
+                    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+                        raise ValueError(f"hooks.{event} contains an invalid command hook args")
     return hooks
 
 
+def _strip_our_hooks_from_event(entries: list, script_name: str) -> int:
+    """Remove every FrontierFuse handler (legacy or current) for ``script_name``.
+
+    Leaves unrelated handlers and empty-matcher structure intact when other hooks remain.
+    Returns the number of removed handlers.
+    """
+    removed = 0
+    keep_entries: list = []
+    for entry in list(entries):
+        if not isinstance(entry, dict):
+            keep_entries.append(entry)
+            continue
+        inner = entry.get("hooks") or []
+        if not isinstance(inner, list):
+            keep_entries.append(entry)
+            continue
+        kept = []
+        for h in inner:
+            if _is_our_hook(h, script_name):
+                removed += 1
+                continue
+            kept.append(h)
+        if kept:
+            entry["hooks"] = kept
+            keep_entries.append(entry)
+        # else: drop empty matcher group entirely
+    entries[:] = keep_entries
+    return removed
+
+
+def _event_has_ready_our_hook(hooks: dict, event: str, script_path: Path) -> bool:
+    script_name = script_path.name
+    for entry in hooks.get(event, []):
+        if not isinstance(entry, dict):
+            continue
+        if not _matcher_covers(event, entry.get("matcher", "")):
+            continue
+        for hook in entry.get("hooks") or []:
+            if _is_ready_exec_hook(hook, script_path):
+                return True
+            # Also accept exec form whose args path matches by basename + same resolved file
+            # when the checkout moved only by symlink.
+            if _is_our_hook(hook, script_name) and isinstance(hook, dict):
+                args = hook.get("args")
+                if (
+                    hook.get("command") == HOOK_COMMAND_EXECUTABLE
+                    and isinstance(args, list)
+                    and len(args) == 1
+                    and isinstance(args[0], str)
+                    and hook.get("timeout") == HOOK_COMMAND_TIMEOUT
+                ):
+                    try:
+                        if Path(args[0]).resolve() == script_path.resolve():
+                            return True
+                    except (OSError, ValueError):
+                        pass
+    return False
+
+
+def _ensure_our_event_handler(hooks: dict, event: str, script_path: Path) -> None:
+    """Upgrade path: strip every prior variant, collapse duplicates, install one exec-form handler."""
+    script_name = _EVENT_SCRIPT[event]
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        hooks[event] = []
+        entries = hooks[event]
+
+    # Remove all legacy + current own handlers first (including narrow-matcher and duplicates).
+    _strip_our_hooks_from_event(entries, script_name)
+
+    # Prefer reusing an existing all-tools (PreToolUse) / any (Stop) entry when present.
+    target = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if event == "PreToolUse":
+            if entry.get("matcher") == PRETOOLUSE_ALL_TOOLS_MATCHER or entry.get("matcher") == "":
+                target = entry
+                break
+        else:
+            # Stop: first covering entry
+            if _matcher_covers("Stop", entry.get("matcher", "")):
+                target = entry
+                break
+
+    desired = _exec_command_hook(script_path)
+    if target is None:
+        matcher = PRETOOLUSE_ALL_TOOLS_MATCHER if event == "PreToolUse" else "*"
+        entries.append({"matcher": matcher, "hooks": [desired]})
+        return
+
+    # Align matcher for PreToolUse to the preferred all-tools token.
+    if event == "PreToolUse" and target.get("matcher") != PRETOOLUSE_ALL_TOOLS_MATCHER:
+        target["matcher"] = PRETOOLUSE_ALL_TOOLS_MATCHER
+    inner = target.setdefault("hooks", [])
+    if not isinstance(inner, list):
+        target["hooks"] = [desired]
+        return
+    # Collapse any residual own handlers and append a single desired exec-form handler.
+    target["hooks"] = [h for h in inner if not _is_our_hook(h, script_name)]
+    target["hooks"].append(desired)
+
+
 def cmd_install_hooks(_args) -> int:
-    pre_cmd, stop_cmd = _our_commands()
+    gate_path, verify_path = _our_script_paths()
     sp = _settings_path()
     sp.parent.mkdir(parents=True, exist_ok=True)
     existing_text = ""
@@ -1253,22 +1533,11 @@ def cmd_install_hooks(_args) -> int:
         return 1
     data.setdefault("hooks", hooks)
 
-    def _has(event: str, command: str) -> bool:
-        for entry in hooks.get(event, []):
-            if not _matcher_covers(event, entry.get("matcher", "")):
-                continue
-            for h in entry.get("hooks", []):
-                if h.get("type") == "command" and h.get("command") == command:
-                    return True
-        return False
-
-    if not _has("PreToolUse", pre_cmd):
-        hooks.setdefault("PreToolUse", []).append(
-            {"matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-             "hooks": [{"type": "command", "command": pre_cmd}]})
-    if not _has("Stop", stop_cmd):
-        hooks.setdefault("Stop", []).append(
-            {"matcher": "*", "hooks": [{"type": "command", "command": stop_cmd}]})
+    # Upgrade / install: strip every prior FrontierFuse variant (shell-form unquoted/quoted,
+    # double-quoted, exec form), collapse duplicates, move PreToolUse to all-tools matcher,
+    # write one official exec-form handler per event with aligned timeout.
+    _ensure_our_event_handler(hooks, "PreToolUse", gate_path)
+    _ensure_our_event_handler(hooks, "Stop", verify_path)
 
     fc.write_text_owner_only(sp, json.dumps(data, indent=2) + "\n")
     print(f"installed FrontierFuse hooks into {sp} (backup: {sp.with_suffix('.json.bak')}).")
@@ -1277,7 +1546,6 @@ def cmd_install_hooks(_args) -> int:
 
 
 def cmd_uninstall_hooks(_args) -> int:
-    pre_cmd, stop_cmd = _our_commands()
     sp = _settings_path()
     if not sp.exists():
         print("no settings.json — nothing to remove.")
@@ -1297,16 +1565,13 @@ def cmd_uninstall_hooks(_args) -> int:
         print(f"REFUSING to modify malformed Claude hook settings {sp}: {exc}", file=sys.stderr)
         return 1
     removed = 0
-    for event in ("PreToolUse", "Stop"):
-        keep = []
-        for entry in hooks.get(event, []):
-            inner = [h for h in entry.get("hooks", []) if h.get("command") not in (pre_cmd, stop_cmd)]
-            removed += len(entry.get("hooks", [])) - len(inner)
-            if inner:
-                entry["hooks"] = inner
-                keep.append(entry)
-        if keep:
-            hooks[event] = keep
+    for event, script_name in _EVENT_SCRIPT.items():
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            continue
+        removed += _strip_our_hooks_from_event(entries, script_name)
+        if entries:
+            hooks[event] = entries
         else:
             hooks.pop(event, None)
     fc.write_text_owner_only(sp, json.dumps(data, indent=2) + "\n")

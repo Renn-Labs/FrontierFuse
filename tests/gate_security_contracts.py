@@ -500,6 +500,104 @@ def test_hook_unarmed_allows_everything() -> None:
         fc.clear_state(sid)
 
 
+
+def test_hook_armed_fail_closed_unknown_and_mutating_tools() -> None:
+    """Armed mode denies tool classes outside the explicit read-only allowlist (hostile)."""
+    sid = "gate-sec-fail-closed"
+    fc.clear_state(sid)
+    try:
+        fc.write_state(sid, armed=True, approved_gate=APPROVED_GATE)
+        for tool, tool_input in (
+            ("Delete", {"file_path": "/tmp/x"}),
+            ("Move", {"source": "/tmp/a", "destination": "/tmp/b"}),
+            ("Create", {"path": "/tmp/x"}),
+            ("NotebookWrite", {"notebook_path": "/tmp/n.ipynb"}),
+            ("Task", {"prompt": "mutate the tree"}),
+            ("TodoWrite", {"todos": []}),
+            ("Agent", {"prompt": "go"}),
+            ("mcp__something__write", {"path": "/tmp/x"}),
+            ("UnknownFutureMutator", {"x": 1}),
+            ("", {}),
+        ):
+            proc = _run_hook({
+                "session_id": sid,
+                "tool_name": tool,
+                "tool_input": tool_input,
+            })
+            _assert(_denied(proc), f"armed must deny {tool!r}: {proc.stdout!r} {proc.stderr!r}")
+
+        # Explicit narrow read-only allow policy still permits current official inspection tools.
+        # Names verified against Claude Code tools reference (ListMcpResourcesTool / ReadMcpResourceTool / LSP).
+        for tool in (
+            "Read",
+            "Grep",
+            "Glob",
+            "WebSearch",
+            "WebFetch",
+            "LSP",
+            "ListMcpResourcesTool",
+            "ReadMcpResourceTool",
+            "ToolSearch",
+        ):
+            proc = _run_hook({
+                "session_id": sid,
+                "tool_name": tool,
+                "tool_input": {},
+            })
+            _assert(_hook_allowed(proc), f"armed must allow readonly {tool!r}: {proc.stdout!r}")
+
+        # Stale / obsolete names and broad dynamic MCP prefixes stay fail-closed.
+        for tool in (
+            "LS",
+            "TodoRead",
+            "ListMcpResources",
+            "ReadMcpResource",
+            "mcp__filesystem__read_file",
+            "mcp__memory__create_entities",
+        ):
+            proc = _run_hook({
+                "session_id": sid,
+                "tool_name": tool,
+                "tool_input": {},
+            })
+            _assert(_denied(proc), f"armed must deny non-allowlisted {tool!r}: {proc.stdout!r}")
+
+        # File mutators remain denied; trivial escape still only lifts BLOCK_TOOLS.
+        proc = _run_hook({
+            "session_id": sid,
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x", "content": "y"},
+        })
+        _assert(_denied(proc), f"Write still denied without trivial: {proc.stdout!r}")
+        proc = _run_hook(
+            {
+                "session_id": sid,
+                "tool_name": "Delete",
+                "tool_input": {"file_path": "/tmp/x"},
+            },
+            extra_env={"FRONTIER_GATE_ALLOW_TRIVIAL": "1"},
+        )
+        _assert(
+            _denied(proc),
+            f"trivial escape must not open non-BLOCK mutators: {proc.stdout!r}",
+        )
+    finally:
+        fc.clear_state(sid)
+
+
+def test_hooks_json_pretooluse_covers_all_tools() -> None:
+    """Matcher must not leave mutating tool classes outside the gate (registration surface)."""
+    data = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    pre = data["hooks"]["PreToolUse"]
+    _assert(isinstance(pre, list) and bool(pre), "PreToolUse hooks missing")
+    matchers = {entry.get("matcher") for entry in pre}
+    # Empty or * covers every tool under Claude Code matcher semantics.
+    _assert(
+        "" in matchers or "*" in matchers,
+        f"PreToolUse matcher must cover all tools for fail-closed policy, got {matchers!r}",
+    )
+
+
 def main() -> int:
     tests = [
         test_allowed_loop_commands,
@@ -519,6 +617,8 @@ def main() -> int:
         test_hook_armed_enforces_policy,
         test_hook_kill_switches_and_trivial_escape,
         test_hook_unarmed_allows_everything,
+        test_hook_armed_fail_closed_unknown_and_mutating_tools,
+        test_hooks_json_pretooluse_covers_all_tools,
     ]
     for fn in tests:
         fn()
