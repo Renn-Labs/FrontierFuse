@@ -13,6 +13,10 @@ Subcommands:
   dispatch "task" [...]        run one selected body/lead executor (or several with --parallel)
   --parallel / -p t...         fan out N concurrent bodies (cap FRONTIER_MAX_PARALLEL, default 4)
   --fanout tasks.json          fan out tasks from a JSON list (strings or {"task": ...})
+                               Total non-empty tasks (positional + fanout) are hard-capped
+                               (DEFAULT_MAX_TASKS_PER_DISPATCH / FRONTIER_MAX_TASKS, hard
+                               ceiling MAX_TASKS_HARD_CEILING). Overflow refuses before any
+                               state mutation or provider call. --budget-usd is informational only.
   arm --gate "pytest -q"       arm and freeze a host-approved acceptance gate
   disarm | done                explicitly override, or close on snapshot-bound GREEN
   verify                       run the frozen gate while armed -> verdict.json
@@ -47,6 +51,12 @@ SESSION_ID = (os.environ.get("FRONTIER_SESSION_ID")
               or "default")
 MAX_PARALLEL = int(os.environ.get("FRONTIER_MAX_PARALLEL", "4"))
 BODY_TIMEOUT = int(os.environ.get("FRONTIER_BODY_TIMEOUT", "900"))
+# Per-invocation task count boundary (before managed mode). Concurrency stays MAX_PARALLEL;
+# this caps how many provider tasks a single dispatch may schedule. Not a dollar budget.
+MAX_TASKS_HARD_CEILING = 64
+DEFAULT_MAX_TASKS_PER_DISPATCH = 32
+# Conservative bound for --fanout file contents (fail-closed before JSON parse).
+MAX_FANOUT_FILE_BYTES = 1 * 1024 * 1024
 SUBCOMMANDS = {"dispatch", "arm", "disarm", "done", "verify", "config", "models", "doctor", "update",
                "install-hooks", "uninstall-hooks"}
 
@@ -278,6 +288,133 @@ def _overrides(args) -> dict:
     return ov
 
 
+def max_tasks_per_dispatch() -> int:
+    """Effective hard task-count limit for one dispatch invocation.
+
+    Default DEFAULT_MAX_TASKS_PER_DISPATCH; FRONTIER_MAX_TASKS may raise or lower it
+    within 1..MAX_TASKS_HARD_CEILING. Invalid values raise ValueError (caller refuses).
+    This is not related to --budget-usd (informational only).
+    """
+    raw = (os.environ.get("FRONTIER_MAX_TASKS") or "").strip()
+    if not raw:
+        return DEFAULT_MAX_TASKS_PER_DISPATCH
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"FRONTIER_MAX_TASKS must be an integer between 1 and {MAX_TASKS_HARD_CEILING}"
+        ) from exc
+    if value < 1 or value > MAX_TASKS_HARD_CEILING:
+        raise ValueError(
+            f"FRONTIER_MAX_TASKS={value} out of range; must be 1..{MAX_TASKS_HARD_CEILING}"
+        )
+    return value
+
+
+def _read_fanout_file_text(path: Path | str) -> str:
+    """Fail-closed bounded read of a fanout JSON path (POSIX Linux/macOS).
+
+    Opens with a nonblocking descriptor, fstats the opened fd, accepts only regular
+    files, enforces MAX_FANOUT_FILE_BYTES before and during read (at most limit+1
+    bytes so concurrent growth cannot bypass), and decodes UTF-8 strictly. Symlink
+    targets that are regular files are allowed; FIFO/symlink-to-special refuse
+    without blocking. All failures become ValueError for cmd_dispatch → exit 2.
+    """
+    p = Path(path)
+    flags = os.O_RDONLY
+    # O_NONBLOCK: open of FIFO must not block waiting for a writer (Linux/macOS).
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    # Intentionally omit O_NOFOLLOW so symlink→regular remains supported.
+    try:
+        fd = os.open(p, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+    try:
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"fanout file {p} is not a regular file")
+        limit = MAX_FANOUT_FILE_BYTES
+        if opened.st_size > limit:
+            raise ValueError(f"fanout file {p} exceeds {limit} bytes")
+        chunks: list[bytes] = []
+        remaining = limit + 1  # read at most limit+1 so growth cannot bypass
+        while remaining > 0:
+            try:
+                chunk = os.read(fd, min(64 * 1024, remaining))
+            except BlockingIOError as exc:
+                raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+            except OSError as exc:
+                raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > limit:
+            raise ValueError(f"fanout file {p} exceeds {limit} bytes")
+        try:
+            return raw.decode("utf-8")  # strict
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"fanout file {p} is not valid UTF-8: {exc}") from exc
+    finally:
+        os.close(fd)
+
+
+def _collect_dispatch_tasks(args) -> list[str]:
+    """Collect non-empty tasks from positional args and optional fanout file.
+
+    Raises ValueError on malformed fanout (not a JSON list, bad item types, unreadable/
+    invalid/oversized/non-regular/non-UTF-8 input, or object items missing a non-null ``task``
+    field). Fail-closed: a single bad object refuses the whole fanout before config resolution,
+    state mutation, run dirs, or providers. Fanout bytes are read via a nonblocking regular-file
+    bound (MAX_FANOUT_FILE_BYTES). Empty/whitespace task strings remain intentionally filtered
+    after collection (not errors). Does not mutate session state or call providers.
+    """
+    tasks: list[str] = list(args.tasks or [])
+    fanout = getattr(args, "fanout", "") or ""
+    if fanout:
+        path = Path(fanout)
+        text = _read_fanout_file_text(path)
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"fanout file is not valid JSON: {exc}") from exc
+        if not isinstance(raw, list):
+            raise ValueError("fanout must be a JSON list of strings or {\"task\": ...} objects")
+        for index, item in enumerate(raw):
+            if isinstance(item, str):
+                tasks.append(item)
+            elif isinstance(item, dict):
+                # Fail-closed: every object must carry a present, non-null task field.
+                # Missing or null must not be coerced to "" and filtered (that would allow
+                # partial dispatch of remaining valid entries in a mixed fanout).
+                if "task" not in item:
+                    raise ValueError(
+                        f"fanout item {index}: object must include a non-null 'task' field"
+                    )
+                task_val = item["task"]
+                if task_val is None:
+                    raise ValueError(
+                        f"fanout item {index}: object must include a non-null 'task' field"
+                    )
+                if not isinstance(task_val, (str, int, float, bool)):
+                    raise ValueError(
+                        f"fanout item {index}: 'task' must be a string-like scalar, "
+                        f"got {type(task_val).__name__}"
+                    )
+                tasks.append(str(task_val))
+            else:
+                raise ValueError(
+                    f"fanout item {index} must be a string or object with 'task', "
+                    f"got {type(item).__name__}"
+                )
+    return [t for t in tasks if isinstance(t, str) and t.strip()]
+
+
 def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, dry: bool) -> dict:
     if dry:
         display_cmd = cmd
@@ -304,13 +441,24 @@ def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, d
 
 
 def cmd_dispatch(args) -> int:
-    tasks = list(args.tasks)
-    if args.fanout:
-        raw = json.loads(Path(args.fanout).read_text())
-        tasks += [t if isinstance(t, str) else str(t.get("task", "")) for t in raw]
-    tasks = [t for t in tasks if t.strip()]
+    # Collect + hard-cap before any config resolve, run dir, dispatch marker, or provider call.
+    try:
+        tasks = _collect_dispatch_tasks(args)
+        limit = max_tasks_per_dispatch()
+    except ValueError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 2
     if not tasks:
         print("no tasks given", file=sys.stderr)
+        return 2
+    if len(tasks) > limit:
+        print(
+            f"dispatch refused: task count {len(tasks)} exceeds hard limit of {limit} "
+            f"per invocation (ceiling {MAX_TASKS_HARD_CEILING}; set FRONTIER_MAX_TASKS "
+            f"within 1..{MAX_TASKS_HARD_CEILING} to adjust). "
+            "This is a task-count boundary, not a dollar budget.",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -1171,11 +1319,31 @@ def cmd_uninstall_hooks(_args) -> int:
 # --------------------------------------------------------------------------- #
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="frontier-dispatch", description="FrontierFuse orchestrator body-caller")
-    ap.add_argument("tasks", nargs="*", help="task string(s) to dispatch to selected bodies")
+    ap.add_argument(
+        "tasks",
+        nargs="*",
+        help=(
+            "task string(s) to dispatch to selected bodies; combined non-empty count with "
+            f"--fanout is hard-capped at {DEFAULT_MAX_TASKS_PER_DISPATCH} "
+            f"(FRONTIER_MAX_TASKS, ceiling {MAX_TASKS_HARD_CEILING})"
+        ),
+    )
     ap.add_argument("--parallel", "-p", action="store_true", help="fan out tasks concurrently")
-    ap.add_argument("--fanout", default="", help="JSON file of tasks (strings or {task:...})")
+    ap.add_argument(
+        "--fanout",
+        default="",
+        help=(
+            "JSON list of tasks (strings or {task:...}); same hard task-count cap as positional "
+            f"tasks ({DEFAULT_MAX_TASKS_PER_DISPATCH}, ceiling {MAX_TASKS_HARD_CEILING})"
+        ),
+    )
     ap.add_argument("--dry-run", action="store_true", help="build the command; make no engine call")
-    ap.add_argument("--budget-usd", type=float, default=0.0, help="informational soft budget note")
+    ap.add_argument(
+        "--budget-usd",
+        type=float,
+        default=0.0,
+        help="informational soft budget note only (not enforced; task-count hard cap is separate)",
+    )
     ap.add_argument("--timeout", type=int, default=BODY_TIMEOUT, help="per-body timeout seconds")
     ap.add_argument("--model", default=None, help="selected executor model; empty uses provider default [legacy]")
     ap.add_argument("--executor-model", default=None,
