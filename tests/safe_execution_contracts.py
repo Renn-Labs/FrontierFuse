@@ -1323,14 +1323,15 @@ def test_setsid_escape_cannot_mutate_after_return() -> None:
 
 def test_containment_cleanup_failure_raises() -> None:
     """If supervisor cannot prove containment_ok, parent must raise ContainmentError."""
-    # Force a fake result path failure by monkeypatching _read_containment_result.
-    real = fc._read_containment_result
-    fc._read_containment_result = lambda path: {  # type: ignore[assignment]
-        "worker_rc": 0,
-        "containment_ok": False,
-        "error": "injected cleanup failure",
-        "supervisor_pid": 0,
-    }
+    real = fc._accept_containment_receipt
+
+    def _fail(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise fc.ContainmentError(
+            getattr(__import__("errno"), "ECHILD", 10),
+            "containment failed: injected cleanup failure",
+        )
+
+    fc._accept_containment_receipt = _fail  # type: ignore[assignment]
     try:
         try:
             fc.run_bounded_subprocess(
@@ -1342,17 +1343,17 @@ def test_containment_cleanup_failure_raises() -> None:
         except fc.ContainmentError as exc:
             msg = str(exc).lower()
             assert "containment" in msg
-            assert "cleanup" in msg or "failed" in msg
+            assert "cleanup" in msg or "failed" in msg or "injected" in msg
         else:
             raise AssertionError("expected ContainmentError on cleanup failure")
     finally:
-        fc._read_containment_result = real  # type: ignore[assignment]
+        fc._accept_containment_receipt = real  # type: ignore[assignment]
 
 
 def test_missing_containment_result_fail_closed() -> None:
     """Missing supervisor result receipt must refuse success."""
-    real = fc._read_containment_result
-    fc._read_containment_result = lambda path: None  # type: ignore[assignment]
+    real = fc._read_containment_receipt_fd
+    fc._read_containment_receipt_fd = lambda *_a, **_k: None  # type: ignore[assignment]
     try:
         try:
             fc.run_bounded_subprocess(
@@ -1366,7 +1367,191 @@ def test_missing_containment_result_fail_closed() -> None:
         else:
             raise AssertionError("expected ContainmentError when result missing")
     finally:
-        fc._read_containment_result = real  # type: ignore[assignment]
+        fc._read_containment_receipt_fd = real  # type: ignore[assignment]
+
+
+def test_forged_containment_receipt_cannot_green() -> None:
+    """Hostile: truthy/non-bool forge + killed supervisor must not return success.
+
+    Mirrors independent checker CRITICAL: forged containment_ok / worker_rc=false
+    must not produce a clean return while a setsid child mutates after return.
+    """
+    target = Path(_TMP) / "forge-late.txt"
+    target.write_text("clean\n", encoding="utf-8")
+    # Worker tries to write a forged file receipt next to any discoverable job path
+    # and leave a SIGTERM-ignoring setsid mutator. Pipe-sealed receipts + returncode
+    # binding must still fail closed.
+    script = (
+        "import os, signal, sys, time, json, glob\n"
+        f"target = {str(target)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(0.05)\n"
+        "    # Attempt classic file forge in any ff-containment temp dirs we can see.\n"
+        "    for d in glob.glob('/tmp/ff-containment-*'):\n"
+        "        try:\n"
+        "            p = os.path.join(d, 'result.json')\n"
+        "            open(p, 'w').write(json.dumps({\n"
+        "                'containment_ok': 'truthy-not-bool',\n"
+        "                'worker_rc': False,\n"
+        "                'supervisor_pid': 12345,\n"
+        "            }))\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    time.sleep(4.0)\n"
+        "    with open(target, 'a', encoding='utf-8') as fh:\n"
+        "        fh.write('late\\n')\n"
+        "    while True:\n"
+        "        time.sleep(0.2)\n"
+        "sys.exit(0)\n"
+    )
+    raised = None
+    try:
+        rc, out, err = fc.run_bounded_subprocess(
+            [sys.executable, "-c", script],
+            timeout=12,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+        # Even if the worker itself exits 0, sealed containment must hold.
+        assert rc == 0, (rc, out, err)
+    except (fc.ContainmentError, subprocess.TimeoutExpired) as exc:
+        raised = exc
+    # Observe past delayed mutation window.
+    time.sleep(5.0)
+    body = target.read_text(encoding="utf-8")
+    assert "late" not in body, f"forged path allowed late mutation: {body!r} raised={raised!r}"
+    assert body == "clean\n"
+
+
+def test_receipt_schema_rejects_truthy_and_bool_rc() -> None:
+    """Strict schema: containment_ok must be True; worker_rc must be int not bool."""
+    secret = b"\x11" * 32
+    root_pid = 4242
+    root_st = 999
+    # Truthy string containment_ok
+    bad1 = {
+        "schema_version": 1,
+        "worker_rc": 0,
+        "containment_ok": "truthy-not-bool",
+        "error": "",
+        "supervisor_pid": root_pid,
+        "supervisor_starttime": root_st,
+    }
+    bad1["seal"] = fc._seal_containment_receipt(secret, bad1)
+    try:
+        fc._accept_containment_receipt(
+            bad1,
+            root_pid=root_pid,
+            root_starttime=root_st,
+            receipt_mac=secret,
+            supervisor_returncode=0,
+        )
+    except fc.ContainmentError:
+        pass
+    else:
+        raise AssertionError("truthy containment_ok must be rejected")
+    # bool worker_rc (False is subclass of int in isinstance checks)
+    bad2 = {
+        "schema_version": 1,
+        "worker_rc": False,
+        "containment_ok": True,
+        "error": "",
+        "supervisor_pid": root_pid,
+        "supervisor_starttime": root_st,
+    }
+    bad2["seal"] = fc._seal_containment_receipt(secret, bad2)
+    try:
+        fc._accept_containment_receipt(
+            bad2,
+            root_pid=root_pid,
+            root_starttime=root_st,
+            receipt_mac=secret,
+            supervisor_returncode=0,
+        )
+    except fc.ContainmentError as exc:
+        assert "worker_rc" in str(exc).lower() or "int" in str(exc).lower()
+    else:
+        raise AssertionError("bool worker_rc must be rejected")
+    # Non-zero supervisor returncode
+    good_body = {
+        "schema_version": 1,
+        "worker_rc": 0,
+        "containment_ok": True,
+        "error": "",
+        "supervisor_pid": root_pid,
+        "supervisor_starttime": root_st,
+    }
+    good_body["seal"] = fc._seal_containment_receipt(secret, good_body)
+    try:
+        fc._accept_containment_receipt(
+            good_body,
+            root_pid=root_pid,
+            root_starttime=root_st,
+            receipt_mac=secret,
+            supervisor_returncode=1,
+        )
+    except fc.ContainmentError:
+        pass
+    else:
+        raise AssertionError("non-zero supervisor returncode must be rejected")
+    # Seal mismatch
+    good_body2 = dict(good_body)
+    good_body2["seal"] = "0" * 64
+    try:
+        fc._accept_containment_receipt(
+            good_body2,
+            root_pid=root_pid,
+            root_starttime=root_st,
+            receipt_mac=secret,
+            supervisor_returncode=0,
+        )
+    except fc.ContainmentError as exc:
+        assert "seal" in str(exc).lower() or "forge" in str(exc).lower()
+    else:
+        raise AssertionError("bad seal must be rejected")
+
+
+def test_timeout_setsid_escape_no_late_mutation() -> None:
+    """Timeout path must prove cleanup; setsid mutator must not write after return/raise."""
+    target = Path(_TMP) / "timeout-late.txt"
+    target.write_text("clean\n", encoding="utf-8")
+    script = (
+        "import os, signal, sys, time\n"
+        f"target = {str(target)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(5.0)\n"
+        "    with open(target, 'a', encoding='utf-8') as fh:\n"
+        "        fh.write('late\\n')\n"
+        "    while True:\n"
+        "        time.sleep(0.2)\n"
+        "# Parent worker lives past short timeout.\n"
+        "time.sleep(30)\n"
+    )
+    raised = None
+    try:
+        fc.run_bounded_subprocess(
+            [sys.executable, "-c", script],
+            timeout=1.0,
+            max_stdout_bytes=512,
+            max_stderr_bytes=512,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raised = exc
+    except fc.ContainmentError as exc:
+        # Acceptable if cleanup cannot be proven — still must not leave mutator alive.
+        raised = exc
+    else:
+        raise AssertionError("expected TimeoutExpired or ContainmentError on timeout escape")
+    time.sleep(6.0)
+    body = target.read_text(encoding="utf-8")
+    assert "late" not in body, f"timeout path left live mutator: {body!r} raised={raised!r}"
+    assert body == "clean\n"
 
 
 def test_descendant_containment_required() -> None:
@@ -1432,6 +1617,9 @@ def main() -> int:
         test_descendant_containment_required,
         test_missing_containment_result_fail_closed,
         test_containment_cleanup_failure_raises,
+        test_receipt_schema_rejects_truthy_and_bool_rc,
+        test_forged_containment_receipt_cannot_green,
+        test_timeout_setsid_escape_no_late_mutation,
         test_setsid_escape_cannot_mutate_after_return,
         test_double_fork_setsid_descendant_killed,
         test_setsid_sigterm_ignore_descendant_killed,

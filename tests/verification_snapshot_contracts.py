@@ -1663,13 +1663,15 @@ def test_gate_containment_failure_is_red() -> None:
     sid = "gate-contain-fail"
     fc.clear_state(sid)
     fc.write_state(sid, last_dispatch_ts=time.time(), dispatch_generation=1)
-    real = fc._read_containment_result
-    fc._read_containment_result = lambda path: {  # type: ignore[assignment]
-        "worker_rc": 0,
-        "containment_ok": False,
-        "error": "injected",
-        "supervisor_pid": 0,
-    }
+    real = fc._accept_containment_receipt
+
+    def _fail(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise fc.ContainmentError(
+            getattr(__import__("errno"), "ECHILD", 10),
+            "containment failed: injected",
+        )
+
+    fc._accept_containment_receipt = _fail  # type: ignore[assignment]
     try:
         rc, out, err = fv._run_gate_argv(
             [sys.executable, "-c", "print('ok')"],
@@ -1685,7 +1687,7 @@ def test_gate_containment_failure_is_red() -> None:
         assert verdict["result"] == "RED"
         assert int(verdict.get("exit_code") or 0) == 125
     finally:
-        fc._read_containment_result = real  # type: ignore[assignment]
+        fc._accept_containment_receipt = real  # type: ignore[assignment]
         fc.clear_state(sid)
 
 

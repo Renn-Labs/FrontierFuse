@@ -34,7 +34,9 @@ import ctypes
 import datetime
 import errno
 import hashlib
+import hmac
 import json
+import secrets
 import math
 import os
 import selectors
@@ -2177,22 +2179,78 @@ def _quiesce_descendants(
     return not kids
 
 
-def _write_containment_result(path: str, payload: dict) -> None:
-    data = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    fd = os.open(
-        str(path),
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC,
-        0o600,
-    )
+_CONTAINMENT_RESULT_FD_ENV = "FRONTIERFUSE_CONTAINMENT_RESULT_FD"
+_CONTAINMENT_SEAL_ENV = "FRONTIERFUSE_CONTAINMENT_SEAL"
+_CONTAINMENT_RECEIPT_SCHEMA = 1
+
+
+def _strip_containment_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    """Return env for the worker without containment IPC secrets.
+
+    None means \"inherit cleaned os.environ\" so secrets never leak to the worker.
+    """
+    src = dict(os.environ) if env is None else dict(env)
+    for key in list(src):
+        if key.startswith("FRONTIERFUSE_CONTAINMENT_"):
+            del src[key]
+    return src
+
+
+def _seal_containment_receipt(secret: bytes, payload: dict) -> str:
+    body = {k: payload[k] for k in sorted(payload) if k != "seal"}
+    raw = json.dumps(body, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hmac.new(secret, raw, hashlib.sha256).hexdigest()
+
+
+def _write_containment_receipt_fd(fd: int, payload: dict, secret: bytes) -> None:
+    """Write one sealed JSON receipt to *fd* (supervisor -> parent pipe)."""
+    out = dict(payload)
+    out["schema_version"] = int(_CONTAINMENT_RECEIPT_SCHEMA)
+    out["seal"] = _seal_containment_receipt(secret, out)
+    data = json.dumps(out, separators=(",", ":"), sort_keys=True).encode("utf-8") + b"\n"
+    view = memoryview(data)
+    while view:
+        try:
+            n = os.write(fd, view)
+        except InterruptedError:
+            continue
+        if n <= 0:
+            break
+        view = view[n:]
+
+
+def _read_containment_receipt_fd(fd: int, *, max_bytes: int = 65536) -> dict | None:
+    """Read one JSON receipt from parent end of the containment pipe."""
+    chunks: list[bytes] = []
+    total = 0
+    while total < max_bytes:
+        try:
+            piece = os.read(fd, min(4096, max_bytes - total))
+        except InterruptedError:
+            continue
+        except OSError:
+            break
+        if not piece:
+            break
+        chunks.append(piece)
+        total += len(piece)
+        if b"\n" in piece:
+            break
+    if not chunks:
+        return None
+    raw = b"".join(chunks).split(b"\n", 1)[0].strip()
+    if not raw:
+        return None
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(fd, 0o600)
-        os.write(fd, data)
-    finally:
-        os.close(fd)
+        obj = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
+# Back-compat name used by a few monketests / older patches.
 def _read_containment_result(path: str) -> dict | None:
+    """Deprecated file-path reader; containment receipts are pipe-sealed only."""
     try:
         raw = Path(path).read_bytes()
     except OSError:
@@ -2204,13 +2262,143 @@ def _read_containment_result(path: str) -> dict | None:
     return obj if isinstance(obj, dict) else None
 
 
+def _strict_int_not_bool(value: object, *, field: str) -> int:
+    if type(value) is not int:  # bool is a subclass of int — reject it
+        raise ContainmentError(
+            getattr(errno, "EINVAL", 22),
+            f"containment receipt {field} must be int (not {type(value).__name__})",
+        )
+    return value
+
+
+def _accept_containment_receipt(
+    result: dict | None,
+    *,
+    root_pid: int,
+    root_starttime: int | None,
+    receipt_mac: bytes,
+    supervisor_returncode: int | None,
+    require_containment_ok: bool = True,
+) -> int:
+    """Validate sealed supervisor receipt; return worker_rc.
+
+    Fail closed on missing/forged schema, pid identity mismatch, non-zero
+    supervisor exit when success is required, truthy non-bool containment_ok,
+    or bool-as-int worker_rc.
+    """
+    if result is None:
+        raise ContainmentError(
+            getattr(errno, "ECHILD", 10),
+            "containment result missing; refusing success",
+        )
+    if supervisor_returncode is None:
+        raise ContainmentError(
+            getattr(errno, "ECHILD", 10),
+            "supervisor returncode unknown; refusing success",
+        )
+    if require_containment_ok and int(supervisor_returncode) != 0:
+        err = str(result.get("error") or "supervisor exited non-zero")
+        raise ContainmentError(
+            getattr(errno, "ECHILD", 10),
+            f"containment supervisor exit {supervisor_returncode}: {err}",
+        )
+    try:
+        schema = _strict_int_not_bool(result.get("schema_version"), field="schema_version")
+    except ContainmentError:
+        raise ContainmentError(
+            getattr(errno, "EINVAL", 22),
+            "containment receipt missing/invalid schema_version",
+        )
+    if schema != int(_CONTAINMENT_RECEIPT_SCHEMA):
+        raise ContainmentError(
+            getattr(errno, "EINVAL", 22),
+            f"containment receipt schema_version {schema} unsupported",
+        )
+    if not _verify_containment_seal(receipt_mac, result):
+        raise ContainmentError(
+            getattr(errno, "EPERM", 1),
+            "containment receipt seal invalid; possible forge",
+        )
+    try:
+        sup_pid = _strict_int_not_bool(result.get("supervisor_pid"), field="supervisor_pid")
+    except ContainmentError as exc:
+        raise ContainmentError(
+            getattr(errno, "EINVAL", 22),
+            "containment receipt supervisor_pid invalid",
+        ) from exc
+    if int(sup_pid) != int(root_pid):
+        raise ContainmentError(
+            getattr(errno, "EPERM", 1),
+            f"containment receipt supervisor_pid {sup_pid} != launched {root_pid}",
+        )
+    try:
+        sup_st = _strict_int_not_bool(
+            result.get("supervisor_starttime"), field="supervisor_starttime"
+        )
+    except ContainmentError as exc:
+        raise ContainmentError(
+            getattr(errno, "EINVAL", 22),
+            "containment receipt supervisor_starttime invalid",
+        ) from exc
+    if root_starttime is None or int(sup_st) != int(root_starttime):
+        raise ContainmentError(
+            getattr(errno, "EPERM", 1),
+            "containment receipt supervisor_starttime mismatch (pid reuse?)",
+        )
+    # Identity equality — never truthiness.
+    if result.get("containment_ok") is not True:
+        if require_containment_ok:
+            err = str(result.get("error") or "containment cleanup failed")
+            raise ContainmentError(
+                getattr(errno, "ECHILD", 10),
+                f"containment failed: {err}",
+            )
+        # timeout/error path may accept a sealed failure receipt for evidence only
+        try:
+            return _strict_int_not_bool(result.get("worker_rc", 1), field="worker_rc")
+        except ContainmentError:
+            return 1
+    worker_rc = _strict_int_not_bool(result.get("worker_rc"), field="worker_rc")
+    return int(worker_rc)
+
+
+def _verify_containment_seal(secret: bytes, payload: dict) -> bool:
+    seal = payload.get("seal")
+    if not isinstance(seal, str) or not seal:
+        return False
+    expected = _seal_containment_receipt(secret, payload)
+    try:
+        return hmac.compare_digest(expected, seal)
+    except (TypeError, ValueError):
+        return False
+
+
 def _containment_supervisor_main(job_path: str) -> int:
     """Per-run subreaper supervisor entry (invoked in a dedicated process).
 
-    Job JSON keys: args (list|str), shell (bool), cwd (str|null), result_path (str).
-    Worker stdio is inherited so the parent capture pipes see gate/provider output.
-    Supervisor process exit 0 only when containment_ok; worker_rc is in the result file.
+    Job JSON keys: args (list|str), shell (bool), cwd (str|null).
+    Receipt IPC is **not** in the job file (worker-discoverable). Parent passes
+    a write-end FD + seal secret via FRONTIERFUSE_CONTAINMENT_* env vars; the
+    worker is spawned with those keys stripped and close_fds=True.
+    Supervisor process exit 0 only when containment_ok; worker_rc is in the sealed receipt.
     """
+    result_fd_raw = os.environ.get(_CONTAINMENT_RESULT_FD_ENV, "")
+    seal_hex = os.environ.get(_CONTAINMENT_SEAL_ENV, "")
+    try:
+        result_fd = int(result_fd_raw)
+    except (TypeError, ValueError):
+        result_fd = -1
+    try:
+        receipt_mac = bytes.fromhex(seal_hex) if seal_hex else b""
+    except ValueError:
+        receipt_mac = b""
+    if result_fd < 0 or not receipt_mac:
+        try:
+            sys.stderr.write("containment supervisor: missing sealed receipt IPC\n")
+        except Exception:
+            pass
+        return 2
+
     try:
         job_raw = Path(job_path).read_bytes()
         job = json.loads(job_raw.decode("utf-8"))
@@ -2219,26 +2407,35 @@ def _containment_supervisor_main(job_path: str) -> int:
             sys.stderr.write(f"containment supervisor: bad job: {exc}\n")
         except Exception:
             pass
+        try:
+            os.close(result_fd)
+        except OSError:
+            pass
         return 2
     if not isinstance(job, dict):
+        try:
+            os.close(result_fd)
+        except OSError:
+            pass
         return 2
-    result_path = str(job.get("result_path") or "")
-    if not result_path:
+
+    # Hardening: refuse worker-visible receipt paths even if an old job smuggles them.
+    if "result_path" in job:
+        try:
+            sys.stderr.write("containment supervisor: refusing job with result_path\n")
+        except Exception:
+            pass
+        try:
+            os.close(result_fd)
+        except OSError:
+            pass
         return 2
+
     raw_args = job.get("args")
     if isinstance(raw_args, list):
         if not raw_args or not all(isinstance(x, str) for x in raw_args):
-            error_pre = "job args must be a non-empty list[str] or str"
             try:
-                _write_containment_result(
-                    result_path,
-                    {
-                        "worker_rc": None,
-                        "containment_ok": False,
-                        "error": error_pre,
-                        "supervisor_pid": os.getpid(),
-                    },
-                )
+                os.close(result_fd)
             except OSError:
                 pass
             return 2
@@ -2247,36 +2444,44 @@ def _containment_supervisor_main(job_path: str) -> int:
         args = raw_args
     else:
         try:
-            _write_containment_result(
-                result_path,
-                {
-                    "worker_rc": None,
-                    "containment_ok": False,
-                    "error": "job args missing or invalid",
-                    "supervisor_pid": os.getpid(),
-                },
-            )
+            os.close(result_fd)
         except OSError:
             pass
         return 2
     shell = bool(job.get("shell", False))
     cwd_raw = job.get("cwd")
     cwd: str | None = str(cwd_raw) if cwd_raw is not None else None
+    # Optional worker env from parent (already free of containment keys).
+    worker_env_raw = job.get("worker_env")
+    worker_env: dict[str, str] | None
+    if isinstance(worker_env_raw, dict) and all(
+        isinstance(k, str) and isinstance(v, str) for k, v in worker_env_raw.items()
+    ):
+        worker_env = _strip_containment_env(worker_env_raw)
+    else:
+        worker_env = _strip_containment_env(None)
 
     worker_rc: int | None = None
     containment_ok = False
     error = ""
     worker: subprocess.Popen | None = None
+    self_pid = os.getpid()
+    self_starttime = _read_pid_starttime(self_pid)
 
     def _finish(code: int) -> int:
         payload = {
-            "worker_rc": worker_rc,
-            "containment_ok": bool(containment_ok),
+            "worker_rc": worker_rc if type(worker_rc) is int else None,
+            "containment_ok": True if containment_ok is True else False,
             "error": error,
-            "supervisor_pid": os.getpid(),
+            "supervisor_pid": self_pid,
+            "supervisor_starttime": self_starttime,
         }
         try:
-            _write_containment_result(result_path, payload)
+            _write_containment_receipt_fd(result_fd, payload, receipt_mac)
+        except OSError:
+            pass
+        try:
+            os.close(result_fd)
         except OSError:
             pass
         return code
@@ -2286,6 +2491,14 @@ def _containment_supervisor_main(job_path: str) -> int:
     except OSError as exc:
         error = f"subreaper enable failed: {exc}"
         return _finish(1)
+
+    # Reduce same-uid /proc/fd snooping surface from the worker.
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        # PR_SET_DUMPABLE = 4
+        libc.prctl(4, 0, 0, 0, 0)
+    except Exception:
+        pass
 
     def _term_handler(signum: int, frame: object) -> None:  # noqa: ARG001
         nonlocal worker_rc, containment_ok, error
@@ -2307,6 +2520,8 @@ def _containment_supervisor_main(job_path: str) -> int:
                     worker_rc = (
                         int(worker.returncode) if worker.returncode is not None else 1
                     )
+                    if type(worker_rc) is not int:
+                        worker_rc = 1
                 except Exception:
                     worker_rc = 1
             containment_ok = _quiesce_descendants()
@@ -2315,7 +2530,8 @@ def _containment_supervisor_main(job_path: str) -> int:
             else:
                 error = error or "terminated by signal"
         finally:
-            os._exit(_finish(1))
+            # Exit 0 only if fully contained (parent may still treat as timeout).
+            os._exit(_finish(0 if containment_ok else 1))
 
     try:
         signal.signal(signal.SIGTERM, _term_handler)
@@ -2328,6 +2544,7 @@ def _containment_supervisor_main(job_path: str) -> int:
             args,
             shell=shell,
             cwd=cwd,
+            env=worker_env,
             stdin=None,
             stdout=None,
             stderr=None,
@@ -2663,18 +2880,24 @@ def run_bounded_subprocess(
         stdin_data = str(input).encode("utf-8")
 
     job_dir = tempfile.mkdtemp(prefix="ff-containment-")
+    receipt_r: int | None = None
+    receipt_w: int | None = None
+    receipt_mac = secrets.token_bytes(32)
     try:
         os.chmod(job_dir, 0o700)
     except OSError:
         pass
     job_path = str(Path(job_dir) / "job.json")
-    result_path = str(Path(job_dir) / "result.json")
-    job_payload = {
+    # Never put result_path or seal material in the worker-visible job file.
+    # Only pass an explicit worker env map when the caller supplied one; otherwise the
+    # supervisor derives a cleaned environ at spawn time (without dumping os.environ into job.json).
+    job_payload: dict = {
         "args": args,
         "shell": bool(shell),
         "cwd": str(cwd) if cwd is not None else None,
-        "result_path": result_path,
     }
+    if env is not None:
+        job_payload["worker_env"] = _strip_containment_env(dict(env))
     job_bytes = json.dumps(job_payload, separators=(",", ":"), sort_keys=True).encode(
         "utf-8"
     )
@@ -2687,7 +2910,26 @@ def run_bounded_subprocess(
         os.close(jfd)
 
     super_argv = _build_supervisor_command(job_path)
-    super_env = dict(env) if env is not None else None
+    # Supervisor env: caller's env (if any) + sealed receipt IPC. Worker never sees these.
+    super_env = dict(os.environ) if env is None else dict(env)
+    try:
+        receipt_r, receipt_w = os.pipe()
+        try:
+            os.set_inheritable(receipt_w, True)
+        except (AttributeError, OSError):
+            pass
+        # Parent keeps read end non-inheritable.
+        try:
+            os.set_inheritable(receipt_r, False)
+        except (AttributeError, OSError):
+            pass
+        super_env[_CONTAINMENT_RESULT_FD_ENV] = str(receipt_w)
+        super_env[_CONTAINMENT_SEAL_ENV] = receipt_mac.hex()
+    except OSError as exc:
+        raise ContainmentError(
+            getattr(exc, "errno", errno.EIO),
+            f"containment receipt pipe setup failed: {exc}",
+        ) from exc
 
     proc: subprocess.Popen[bytes] | None = None
     pgid: int | None = None
@@ -2696,18 +2938,119 @@ def run_bounded_subprocess(
     sel: selectors.BaseSelector | None = None
 
     def _cleanup_job_dir() -> None:
-        for name in (job_path, result_path):
-            try:
-                os.unlink(name)
-            except OSError:
-                pass
+        try:
+            os.unlink(job_path)
+        except OSError:
+            pass
         try:
             os.rmdir(job_dir)
         except OSError:
             pass
+        for fd in (receipt_r, receipt_w):
+            if fd is None:
+                continue
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def _read_receipt() -> dict | None:
+        nonlocal receipt_r
+        if receipt_r is None:
+            return None
+        try:
+            return _read_containment_receipt_fd(receipt_r)
+        finally:
+            try:
+                os.close(receipt_r)
+            except OSError:
+                pass
+            receipt_r = None
+
+    def _ensure_contained_or_raise(reason: str) -> None:
+        """Best-effort kill + fail if descendants of the supervisor still live."""
+        _kill_process_group(
+            pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime
+        )
+        if root_pid is not None and _pid_matches_identity(int(root_pid), root_starttime):
+            if _list_descendant_pids(int(root_pid)):
+                raise ContainmentError(
+                    getattr(errno, "ECHILD", 10),
+                    f"{reason}: descendants survived after cleanup",
+                )
+        # Supervisor already reaped — still scan for obvious leaked job children is N/A;
+        # parent only has the supervisor root identity.
+
+    def _timeout_with_containment_proof() -> NoReturn:
+        """Signal supervisor to quiesce; require sealed clean receipt before TimeoutExpired."""
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            wait_budget = (
+                float(_CONTAINMENT_TERM_GRACE_S)
+                + float(_CONTAINMENT_KILL_GRACE_S)
+                + 2.0
+            )
+            try:
+                proc.wait(timeout=wait_budget)
+            except subprocess.TimeoutExpired:
+                _kill_process_group(
+                    pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime
+                )
+                try:
+                    proc.wait(timeout=1.0)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+        drain_deadline = time.monotonic() + _CAPTURE_DRAIN_AFTER_KILL_S
+        # drain handled by caller streams if needed — parent already left select loop
+        result = _read_receipt()
+        try:
+            if root_pid is None:
+                raise ContainmentError(
+                    getattr(errno, "ECHILD", 10),
+                    "timeout path: supervisor identity missing",
+                )
+            # Accept sealed receipt even if containment_ok False for error text, then fail.
+            if result is None or result.get("containment_ok") is not True:
+                err = ""
+                if isinstance(result, dict):
+                    err = str(result.get("error") or "")
+                _ensure_contained_or_raise("timeout path")
+                raise ContainmentError(
+                    getattr(errno, "ECHILD", 10),
+                    f"timeout path: containment not proven ({err or 'no sealed ok receipt'})",
+                )
+            # Seal/identity must still bind to the launched supervisor.
+            _accept_containment_receipt(
+                result,
+                root_pid=int(root_pid),
+                root_starttime=root_starttime,
+                receipt_mac=receipt_mac,
+                supervisor_returncode=0 if (proc is not None and proc.returncode == 0) else (
+                    int(proc.returncode) if proc is not None and proc.returncode is not None else 1
+                ),
+                require_containment_ok=True,
+            )
+        except ContainmentError:
+            _ensure_contained_or_raise("timeout path")
+            raise
+        # Extra belt: no living descendants under a still-alive supervisor identity.
+        if root_pid is not None and _pid_matches_identity(int(root_pid), root_starttime):
+            if _list_descendant_pids(int(root_pid)):
+                raise ContainmentError(
+                    getattr(errno, "ECHILD", 10),
+                    "timeout path: descendants survived after sealed receipt",
+                )
+        raise subprocess.TimeoutExpired(
+            args,
+            timeout_f if timeout_f is not None else 0,
+        )
 
     try:
         try:
+            pass_fds = (receipt_w,) if receipt_w is not None else ()
             proc = subprocess.Popen(
                 super_argv,
                 stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
@@ -2717,11 +3060,21 @@ def run_bounded_subprocess(
                 env=super_env,
                 shell=False,
                 start_new_session=True,
+                pass_fds=pass_fds,
+                close_fds=True,
             )
         except FileNotFoundError:
             raise
         except OSError:
             raise
+        finally:
+            # Parent must close write end so EOF is visible after supervisor exits.
+            if receipt_w is not None:
+                try:
+                    os.close(receipt_w)
+                except OSError:
+                    pass
+                receipt_w = None
 
         assert proc is not None
         assert proc.stdout is not None and proc.stderr is not None
@@ -2963,8 +3316,14 @@ def run_bounded_subprocess(
                         sel = None
 
                 if timed_out:
-                    _kill_process_group(pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime)
+                    # Drain pipes briefly for TimeoutExpired payload fidelity, then prove cleanup.
                     drain_deadline = time.monotonic() + _CAPTURE_DRAIN_AFTER_KILL_S
+                    # First request orderly supervisor quiesce; do not raise timeout until proven.
+                    if proc.poll() is None:
+                        try:
+                            proc.terminate()
+                        except OSError:
+                            pass
                     while fd_map and time.monotonic() < drain_deadline:
                         progress = False
                         for fd in list(fd_map):
@@ -2981,10 +3340,7 @@ def run_bounded_subprocess(
                                     progress = True
                         if not progress:
                             break
-                    raise subprocess.TimeoutExpired(
-                        args,
-                        timeout_f if timeout_f is not None else 0,
-                    )
+                    _timeout_with_containment_proof()
 
                 if proc.poll() is None:
                     try:
@@ -2994,65 +3350,49 @@ def run_bounded_subprocess(
                         else:
                             proc.wait()
                     except subprocess.TimeoutExpired:
-                        _kill_process_group(pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime)
-                        raise subprocess.TimeoutExpired(
-                            args,
-                            timeout_f if timeout_f is not None else 0,
-                        )
+                        _timeout_with_containment_proof()
 
-                containment_clean = True
+                # Optional parent-side kill only as belt-and-suspenders; sealed receipt is authority.
                 if force_group_cleanup or (
                     pgid is not None and _process_group_alive(pgid)
                 ):
-                    containment_clean = _kill_process_group(
+                    _kill_process_group(
                         pgid=pgid,
                         proc=proc,
                         root_pid=root_pid,
                         root_starttime=root_starttime,
                     )
                 elif fd_map:
-                    containment_clean = _kill_process_group(
+                    _kill_process_group(
                         pgid=pgid,
                         proc=proc,
                         root_pid=root_pid,
                         root_starttime=root_starttime,
                     )
                 elif root_pid is not None and _list_descendant_pids(root_pid):
-                    containment_clean = _kill_process_group(
+                    _kill_process_group(
                         pgid=pgid,
                         proc=proc,
                         root_pid=root_pid,
                         root_starttime=root_starttime,
                     )
 
-                result = _read_containment_result(result_path)
-                if result is None:
-                    _kill_process_group(pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime)
+                result = _read_receipt()
+                if root_pid is None:
                     raise ContainmentError(
                         getattr(errno, "ECHILD", 10),
-                        "containment result missing; refusing success",
+                        "supervisor pid missing after run",
                     )
-                if not result.get("containment_ok"):
-                    _kill_process_group(pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime)
-                    err = str(result.get("error") or "containment cleanup failed")
-                    raise ContainmentError(
-                        getattr(errno, "ECHILD", 10),
-                        f"containment failed: {err}",
-                    )
-                if not containment_clean:
-                    _kill_process_group(pgid=pgid, proc=proc, root_pid=root_pid, root_starttime=root_starttime)
-                    if root_pid is not None and _list_descendant_pids(root_pid):
-                        raise ContainmentError(
-                            getattr(errno, "ECHILD", 10),
-                            "descendants survived after parent-side cleanup",
-                        )
-
-                worker_rc = result.get("worker_rc")
-                if not isinstance(worker_rc, int):
-                    raise ContainmentError(
-                        getattr(errno, "ECHILD", 10),
-                        "containment result missing worker_rc",
-                    )
+                worker_rc = _accept_containment_receipt(
+                    result,
+                    root_pid=int(root_pid),
+                    root_starttime=root_starttime,
+                    receipt_mac=receipt_mac,
+                    supervisor_returncode=(
+                        int(proc.returncode) if proc.returncode is not None else None
+                    ),
+                    require_containment_ok=True,
+                )
                 return (
                     int(worker_rc),
                     streams["stdout"].text(),
@@ -3088,6 +3428,7 @@ def run_bounded_subprocess(
                         pass
     finally:
         _cleanup_job_dir()
+
 
 def run_engine(cmd: list[str], prompt: str, timeout: int = 300) -> tuple[int, str, str]:
     """Run a built engine command with the prompt. Returns (returncode, stdout, stderr).
