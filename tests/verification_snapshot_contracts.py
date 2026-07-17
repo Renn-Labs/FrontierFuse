@@ -1493,6 +1493,202 @@ def test_cli_legacy_shell_flag() -> None:
         fc.clear_state(sid)
 
 
+# --------------------------------------------------------------------------- #
+# Bounded gate capture (0.3.7)
+# --------------------------------------------------------------------------- #
+def test_gate_hostile_stdout_overflow_capped() -> None:
+    """Gate stdout is byte-capped; truncation evidence has no secrets; verdict still stamps."""
+    repo = _init_repo()
+    sid = "gate-overflow-cap"
+    fc.clear_state(sid)
+    fc.write_state(sid, last_dispatch_ts=time.time(), dispatch_generation=1)
+    old = os.environ.get("FRONTIER_GATE_CAPTURE_MAX_BYTES")
+    os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = "2048"
+    # Reload gate limit path uses env at call time via gate_capture_max_bytes().
+    try:
+        overflow_py = "import sys; sys.stdout.write((('Z'*1024)+'TAIL_TOKEN\\n')*80)"
+        gate = f"{sys.executable} -c " + shlex.quote(overflow_py)
+        v = fv.run_gate(gate, session_id=sid, cwd=str(repo))
+        assert v["exit_code"] == 0
+        # Full stdout is not stored on the verdict — only tails — but the gate path
+        # must have completed without OOM and with truncation on the capture path.
+        rc, out, err = fv._run_gate_argv(
+            [sys.executable, "-c", overflow_py],
+            str(repo),
+        )
+        assert rc == 0
+        assert "capture_truncated" in out
+        assert "retained_bytes=2048" in out
+        assert "stream=stdout" in out
+        discarded = int(
+            [p for p in out.split() if p.startswith("discarded_bytes=")][0]
+            .split("=", 1)[1]
+            .rstrip("]")
+        )
+        assert discarded > 10_000, discarded
+        # Truncation evidence must be structural only (no embedded caller text).
+        assert "stream=stdout" in out
+        assert "retained_bytes=" in out
+        assert "password" not in out.lower()
+        assert "token=" not in out.lower()
+        # Public verdict still has string tails (compatible shape).
+        assert isinstance(v.get("stdout_tail"), str)
+        assert isinstance(v.get("stderr_tail"), str)
+    finally:
+        if old is None:
+            os.environ.pop("FRONTIER_GATE_CAPTURE_MAX_BYTES", None)
+        else:
+            os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = old
+        fc.clear_state(sid)
+
+
+def test_gate_simultaneous_dual_stream_and_non_utf8() -> None:
+    repo = _init_repo()
+    old = os.environ.get("FRONTIER_GATE_CAPTURE_MAX_BYTES")
+    os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = "1024"
+    try:
+        script = (
+            "import os\n"
+            "os.write(1, b'S' * (64 * 1024))\n"
+            "os.write(2, b'E' * (64 * 1024) + b'\\xff')\n"
+        )
+        rc, out, err = fv._run_gate_argv([sys.executable, "-c", script], str(repo))
+        assert rc == 0
+        assert "capture_truncated" in out and "stream=stdout" in out
+        assert "capture_truncated" in err and "stream=stderr" in err
+        # Non-UTF8 must not crash; replacement or retained prefix present.
+        assert isinstance(out, str) and isinstance(err, str)
+    finally:
+        if old is None:
+            os.environ.pop("FRONTIER_GATE_CAPTURE_MAX_BYTES", None)
+        else:
+            os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = old
+
+
+def test_gate_timeout_kills_descendants() -> None:
+    repo = _init_repo()
+    stamp = Path(_TMP) / "gate-pg-alive"
+    if stamp.exists():
+        stamp.unlink()
+    provider = Path(_TMP) / "gate_group_provider.py"
+    provider.write_text(
+        "import os, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    while True:\n"
+        "        open(stamp, 'w').write(str(time.time()))\n"
+        "        time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+    old_timeout = fv.GATE_TIMEOUT
+    fv.GATE_TIMEOUT = 1
+    try:
+        t0 = time.time()
+        rc, out, err = fv._run_gate_argv([sys.executable, str(provider)], str(repo))
+        elapsed = time.time() - t0
+        assert rc == 124, (rc, out, err)
+        assert "timed out" in err
+        assert elapsed < 8, elapsed
+        time.sleep(0.3)
+        if stamp.exists():
+            m1 = stamp.stat().st_mtime
+            time.sleep(0.4)
+            m2 = stamp.stat().st_mtime
+            assert m1 == m2, "gate descendant still alive after timeout"
+    finally:
+        fv.GATE_TIMEOUT = old_timeout
+
+
+def test_gate_invalid_capture_limit_env() -> None:
+    repo = _init_repo()
+    old = os.environ.get("FRONTIER_GATE_CAPTURE_MAX_BYTES")
+    os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = "0"
+    try:
+        rc, out, err = fv._run_gate_argv([sys.executable, "-c", "print(1)"], str(repo))
+        assert rc == 2
+        assert "invalid gate capture limit" in err
+    finally:
+        if old is None:
+            os.environ.pop("FRONTIER_GATE_CAPTURE_MAX_BYTES", None)
+        else:
+            os.environ["FRONTIER_GATE_CAPTURE_MAX_BYTES"] = old
+
+
+
+
+def test_gate_setsid_escape_does_not_stamp_green_with_live_mutator() -> None:
+    """Gate with setsid escape: mutator must die before return; no late tracked mutation."""
+    repo = _init_repo()
+    sid = "gate-setsid-escape"
+    fc.clear_state(sid)
+    fc.write_state(sid, last_dispatch_ts=time.time(), dispatch_generation=1)
+    tracked = repo / "tracked.txt"
+    tracked.write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=str(repo), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "tracked"], cwd=str(repo), check=True, capture_output=True)
+
+    # Gate script file (argv-safe) exits 0 after forking a delayed setsid mutator.
+    script_path = Path(_TMP) / "gate_setsid_escape.py"
+    script_path.write_text(
+        "import os, signal, sys, time\n"
+        f"target = {str(tracked)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(6.0)\n"
+        "    open(target, 'a').write('late\\n')\n"
+        "    while True:\n"
+        "        time.sleep(0.2)\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+    gate = f"{shlex.quote(sys.executable)} {shlex.quote(str(script_path))}"
+    verdict = fv.run_gate(gate, session_id=sid, cwd=str(repo))
+    # After return, wait past delayed mutation window.
+    time.sleep(7.0)
+    body = tracked.read_text(encoding="utf-8")
+    assert "late" not in body, f"late mutation after gate: {body!r}"
+    assert verdict.get("exit_code") == 0, verdict
+    # Clean workspace + exit 0 + stable => GREEN under normal arm state.
+    assert body == "clean\n"
+    assert verdict["result"] == "GREEN", verdict
+    fc.clear_state(sid)
+
+
+def test_gate_containment_failure_is_red() -> None:
+    """Injected containment failure must yield non-zero exit and RED verdict."""
+    repo = _init_repo()
+    sid = "gate-contain-fail"
+    fc.clear_state(sid)
+    fc.write_state(sid, last_dispatch_ts=time.time(), dispatch_generation=1)
+    real = fc._read_containment_result
+    fc._read_containment_result = lambda path: {  # type: ignore[assignment]
+        "worker_rc": 0,
+        "containment_ok": False,
+        "error": "injected",
+        "supervisor_pid": 0,
+    }
+    try:
+        rc, out, err = fv._run_gate_argv(
+            [sys.executable, "-c", "print('ok')"],
+            str(repo),
+        )
+        assert rc == 125, (rc, out, err)
+        assert "containment" in (err or "").lower()
+        verdict = fv.run_gate(
+            f"{sys.executable} -c " + shlex.quote("print('ok')"),
+            session_id=sid,
+            cwd=str(repo),
+        )
+        assert verdict["result"] == "RED"
+        assert int(verdict.get("exit_code") or 0) == 125
+    finally:
+        fc._read_containment_result = real  # type: ignore[assignment]
+        fc.clear_state(sid)
+
+
 def main() -> int:
     tests = [
         test_repo_fixture_canonicalizes_symlinked_tempdir,
@@ -1548,6 +1744,12 @@ def main() -> int:
         test_stop_hook_blocks_corrupt_global_config_after_green,
         test_verdict_artifact_failure_clears_session_authority,
         test_cli_legacy_shell_flag,
+        test_gate_hostile_stdout_overflow_capped,
+        test_gate_simultaneous_dual_stream_and_non_utf8,
+        test_gate_timeout_kills_descendants,
+        test_gate_setsid_escape_does_not_stamp_green_with_live_mutator,
+        test_gate_containment_failure_is_red,
+        test_gate_invalid_capture_limit_env,
     ]
     failed = 0
     for test in tests:

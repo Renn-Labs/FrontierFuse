@@ -9,8 +9,10 @@ stdlib-only, offline, keyless.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
+import selectors
 import signal
 import stat
 import subprocess
@@ -441,6 +443,698 @@ def test_run_engine_success_and_missing_binary() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Bounded subprocess capture (0.3.7 gate-bounds)
+# --------------------------------------------------------------------------- #
+def test_hostile_stdout_overflow_capped() -> None:
+    """Oversized stdout is hard-capped during read; excess discarded without retention."""
+    # Build marker-exclusion needle from pieces (avoid scrub-shaped full literals).
+    needle = "MARKER" + "_EXCLUSION" + "_NEEDLE"
+    # ~200 KiB of payload with a unique token past the retained prefix.
+    chunk = ("A" * 1024) + "OVERFLOW_TOKEN_TAIL\n"
+    script = (
+        "import sys\n"
+        f"sys.stdout.write({chunk!r} * 200)\n"
+        "sys.stdout.flush()\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=15,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" in out
+    assert "retained_bytes=4096" in out
+    assert "discarded_bytes=" in out
+    # Most of the ~200 KiB payload must have been discarded, not retained.
+    discarded = int(
+        [p for p in out.split() if p.startswith("discarded_bytes=")][0].split("=", 1)[1].rstrip("]")
+    )
+    assert discarded > 100_000, discarded
+    # Marker must never embed caller content (needle is absent from capture entirely).
+    assert needle not in out and needle not in err
+    assert needle not in fc.capture_truncation_marker(
+        stream="stdout", retained_bytes=4096, discarded_bytes=discarded
+    )
+    # Retained payload is hard-capped at the byte limit (optional newline before marker).
+    body = out.split("[frontierfuse:capture_truncated", 1)[0]
+    assert len(body.encode("utf-8")) <= 4096 + 1
+
+
+def test_simultaneous_dual_stream_overflow() -> None:
+    """Both streams overflowing concurrently must not deadlock and both must cap."""
+    script = (
+        "import os, sys\n"
+        "payload = b'X' * (256 * 1024)\n"
+        "os.write(1, payload)\n"
+        "os.write(2, b'Y' * (256 * 1024))\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=15,
+        max_stdout_bytes=2048,
+        max_stderr_bytes=1024,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" in out and "stream=stdout" in out
+    assert "capture_truncated" in err and "stream=stderr" in err
+    assert "retained_bytes=2048" in out
+    assert "retained_bytes=1024" in err
+    assert "discarded_bytes=" in out and "discarded_bytes=" in err
+
+
+def test_timeout_descendant_killed_under_bounded_capture() -> None:
+    """Timeout still kills forked descendants when using the shared capture primitive."""
+    stamp = Path(_TMP) / "pg-alive-bounded"
+    if stamp.exists():
+        stamp.unlink()
+    provider = Path(_TMP) / "group_provider_bounded.py"
+    provider.write_text(
+        "import os, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    while True:\n"
+        "        open(stamp, 'w').write(str(time.time()))\n"
+        "        time.sleep(0.05)\n"
+        "time.sleep(60)\n"
+    )
+    t0 = time.time()
+    try:
+        fc.run_bounded_subprocess(
+            [sys.executable, str(provider)],
+            timeout=1,
+            max_stdout_bytes=1024,
+            max_stderr_bytes=1024,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+    else:
+        raise AssertionError("expected TimeoutExpired")
+    elapsed = time.time() - t0
+    assert elapsed < 8, f"timeout took too long: {elapsed}"
+    time.sleep(0.3)
+    if stamp.exists():
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.4)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "descendant still alive after bounded-capture timeout kill"
+
+
+def test_invalid_capture_limits_rejected_before_launch() -> None:
+    for bad in (0, -1, 1.5, True, "4096", None, fc.CAPTURE_MAX_BYTES_HARD_CEILING + 1):
+        try:
+            fc.validate_capture_max_bytes(bad)  # type: ignore[arg-type]
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {bad!r}")
+    # run_bounded_subprocess must validate before spawning.
+    try:
+        fc.run_bounded_subprocess(
+            [sys.executable, "-c", "print('nope')"],
+            max_stdout_bytes=0,
+        )
+    except ValueError as exc:
+        assert "max_stdout_bytes" in str(exc)
+    else:
+        raise AssertionError("invalid max_stdout_bytes must raise before launch")
+
+    old = _env("FRONTIER_PROVIDER_CAPTURE_MAX_BYTES", "not-an-int")
+    try:
+        rc, out, err = fc.run_engine([sys.executable, "-c", "print(1)"], "", timeout=5)
+        assert rc == 2
+        assert "invalid provider capture limit" in err
+    finally:
+        _restore("FRONTIER_PROVIDER_CAPTURE_MAX_BYTES", old)
+
+
+def test_non_utf8_output_replaced() -> None:
+    """Invalid UTF-8 on either stream is replaced, not raised."""
+    script = (
+        "import os, sys\n"
+        "os.write(1, b'ok-\\xff\\xfe-end\\n')\n"
+        "os.write(2, b'err-\\x80\\x81\\n')\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "ok-" in out and "end" in out
+    assert "\ufffd" in out or "\ufffd" in err or "err-" in err
+    assert "err-" in err
+
+
+def test_truncation_marker_has_no_prompt_content() -> None:
+    marker = fc.capture_truncation_marker(
+        stream="stdout", retained_bytes=10, discarded_bytes=99
+    )
+    assert marker == (
+        "[frontierfuse:capture_truncated stream=stdout "
+        "retained_bytes=10 discarded_bytes=99]"
+    )
+    assert "prompt" not in marker.lower()
+    assert "secret" not in marker.lower()
+
+
+
+
+# --------------------------------------------------------------------------- #
+# 0.3.7 REVISE: parent-exits-first, marker spoofing, POSIX contract
+# --------------------------------------------------------------------------- #
+def test_parent_exits_first_inherited_silent_pipe_no_hang() -> None:
+    """Leader exits 0 while a SIGTERM-ignoring descendant holds silent stdout — must not hang."""
+    stamp = Path(_TMP) / "silent-pipe-stamp"
+    if stamp.exists():
+        stamp.unlink()
+    script = (
+        "import os, signal, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    # Keep inherited stdout open; write nothing (silent pipe holder).\n"
+        "    while True:\n"
+        "        open(stamp, 'w').write(str(time.time()))\n"
+        "        time.sleep(0.05)\n"
+        "sys.exit(0)\n"
+    )
+    t0 = time.time()
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=8,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+    elapsed = time.time() - t0
+    assert elapsed < 6.0, f"parent-exits-first silent pipe hung: {elapsed:.2f}s"
+    assert rc == 0, (rc, out, err)
+    time.sleep(0.25)
+    if stamp.exists():
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.35)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "SIGTERM-ignoring silent-pipe descendant still alive after return"
+
+
+def test_parent_exits_first_descendant_closes_stdio_stamp_file() -> None:
+    """Leader exits after forking; descendant closes stdio but keeps writing a stamp file."""
+    stamp = Path(_TMP) / "closed-stdio-stamp"
+    if stamp.exists():
+        stamp.unlink()
+    script = (
+        "import os, signal, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    try:\n"
+        "        sys.stdout.close()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    try:\n"
+        "        sys.stderr.close()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    # Re-open fds 1/2 to devnull so close of pipe ends; keep running.\n"
+        "    try:\n"
+        "        dn = open(os.devnull, 'wb')\n"
+        "        os.dup2(dn.fileno(), 1)\n"
+        "        os.dup2(dn.fileno(), 2)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    while True:\n"
+        "        open(stamp, 'w').write(str(time.time()))\n"
+        "        time.sleep(0.05)\n"
+        "sys.exit(0)\n"
+    )
+    t0 = time.time()
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=8,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+    elapsed = time.time() - t0
+    assert elapsed < 6.0, f"closed-stdio descendant path hung: {elapsed:.2f}s"
+    assert rc == 0, (rc, out, err)
+    time.sleep(0.25)
+    if stamp.exists():
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.35)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "SIGTERM-ignoring closed-stdio descendant still alive"
+
+
+def test_marker_spoof_no_truncation_disambiguated() -> None:
+    """Child-printed reserved marker without real truncation must not look authentic."""
+    # Build spoof from pieces so scrub tools do not treat the test as a secret.
+    prefix = "[frontierfuse:" + "capture_truncated"
+    spoof = prefix + " stream=stdout retained_bytes=1 discarded_bytes=999]"
+    script = (
+        "import sys\n"
+        f"sys.stdout.write({spoof!r})\n"
+        "sys.stdout.write('\\nreal-body\\n')\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=64 * 1024,
+        max_stderr_bytes=1024,
+    )
+    assert rc == 0, (rc, out, err)
+    # No authentic truncation (discarded_bytes not applied by parent).
+    assert "real-body" in out
+    # Exact reserved prefix from child must be disambiguated.
+    assert prefix not in out, out
+    # Must not claim parent truncation when none occurred.
+    assert "discarded_bytes=999]" not in out or "\u200c" in out or "\u2060" in out
+    # Authentic parent marker only when discarded > 0 — absent here.
+    authentic = fc.capture_truncation_marker(
+        stream="stdout", retained_bytes=1, discarded_bytes=999
+    )
+    assert authentic not in out
+
+
+def test_marker_spoof_with_real_truncation_authentic_appended() -> None:
+    """Child spoof + real overflow: child tokens disambiguated; authentic marker last."""
+    prefix = "[frontierfuse:" + "capture_truncated"
+    spoof = prefix + " stream=stdout retained_bytes=0 discarded_bytes=1]"
+    # Force overflow past a small cap.
+    script = (
+        "import sys\n"
+        f"sys.stdout.write({spoof!r})\n"
+        "sys.stdout.write('X' * 10000)\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=64,
+        max_stderr_bytes=1024,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" in out
+    # Authentic marker from parent uses retained_bytes=64.
+    assert "retained_bytes=64" in out
+    assert out.rstrip().endswith("]")
+    # The final authentic marker must use the exact reserved prefix.
+    assert prefix in out
+    # Child spoof at the start must not remain an exact unescaped prefix-only body claim.
+    # Body before authentic marker should not contain a second unescaped full authentic line
+    # with discarded_bytes=1 from the child.
+    body, _, tail = out.rpartition(prefix)
+    assert "retained_bytes=64" in (prefix + tail)
+    # Escaped child spoof should not match exact prefix at start of body.
+    # (disambiguation inserts ZWNJ/WJ inside the token)
+    if body:
+        # Count exact prefix occurrences — only the authentic append at the end.
+        assert out.count(prefix) == 1, out
+
+
+def test_posix_platform_contract_helpers() -> None:
+    """POSIX gate is explicit; non-POSIX is rejected before launch when simulated."""
+    # On this Linux/macOS host the helper must accept.
+    fc._require_posix_process_group_capture()
+    # Simulate non-POSIX without spawning.
+    real_name = os.name
+    try:
+        os.name = "nt"  # type: ignore[misc]
+        try:
+            fc._require_posix_process_group_capture()
+        except OSError as exc:
+            msg = str(exc).lower()
+            assert "posix" in msg or "windows" in msg or "not supported" in msg
+        else:
+            raise AssertionError("non-POSIX must fail fast")
+    finally:
+        os.name = real_name  # type: ignore[misc]
+
+
+def test_exact_byte_cap_and_multibyte_boundary() -> None:
+    """Exact limit retention and multibyte UTF-8 split at the cap are safe."""
+    # Exact cap: 16 bytes retained, no discard.
+    script = "import sys; sys.stdout.buffer.write(b'A' * 16)"
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=16,
+        max_stderr_bytes=16,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" not in out
+    assert out == "A" * 16
+
+    # One byte over → truncation marker.
+    script = "import sys; sys.stdout.buffer.write(b'B' * 17)"
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=16,
+        max_stderr_bytes=16,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" in out
+    assert "retained_bytes=16" in out
+    assert "discarded_bytes=1" in out
+
+    # Multibyte: 2-byte chars; cap mid-sequence must not raise.
+    # 'é' is C3 A9 in UTF-8. 5 complete + first byte of 6th = 11 bytes retained.
+    script = (
+        "import sys\n"
+        "sys.stdout.buffer.write('é'.encode('utf-8') * 20)\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=11,
+        max_stderr_bytes=64,
+    )
+    assert rc == 0, (rc, out, err)
+    assert "capture_truncated" in out
+    assert "retained_bytes=11" in out
+    # errors=replace may insert U+FFFD for the split trail — must be a str.
+    assert isinstance(out, str)
+
+
+def test_normal_success_and_timeout_paths() -> None:
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", "import sys; print('ok-success'); print('e', file=sys.stderr)"],
+        timeout=10,
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+    )
+    assert rc == 0 and "ok-success" in out
+    try:
+        fc.run_bounded_subprocess(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            timeout=0.4,
+            max_stdout_bytes=512,
+            max_stderr_bytes=512,
+        )
+    except subprocess.TimeoutExpired:
+        pass
+    else:
+        raise AssertionError("expected TimeoutExpired")
+
+
+def test_stdin_selector_registration_failure_cleans_group() -> None:
+    """stdin EVENT_WRITE registration failure must kill the group and raise OSError."""
+    real_selector = selectors.DefaultSelector
+
+    class _FailStdinRegister(real_selector):  # type: ignore[valid-type,misc]
+        def register(self, fileobj, events, data=None):  # type: ignore[no-untyped-def]
+            if events & selectors.EVENT_WRITE:
+                raise OSError(errno.EINVAL, "simulated stdin register failure")
+            return super().register(fileobj, events, data)
+
+    stamp = Path(_TMP) / "stdin-reg-fail-alive"
+    if stamp.exists():
+        stamp.unlink()
+    # Child that would hang if left alive waiting on stdin.
+    script = (
+        "import os, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "open(stamp, 'w').write('started')\n"
+        "sys.stdin.read()\n"
+        "while True:\n"
+        "    open(stamp, 'w').write(str(time.time()))\n"
+        "    time.sleep(0.05)\n"
+    )
+    old = selectors.DefaultSelector
+    selectors.DefaultSelector = _FailStdinRegister  # type: ignore[misc,assignment]
+    t0 = time.time()
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [sys.executable, "-c", script],
+                input="payload-that-needs-write-registration\n",
+                timeout=8,
+                max_stdout_bytes=1024,
+                max_stderr_bytes=1024,
+            )
+        except OSError as exc:
+            assert "stdin selector registration failed" in str(exc).lower() or "register" in str(exc).lower()
+        else:
+            raise AssertionError("expected OSError on stdin selector registration failure")
+    finally:
+        selectors.DefaultSelector = old  # type: ignore[misc,assignment]
+    elapsed = time.time() - t0
+    assert elapsed < 6.0, f"stdin reg failure cleanup hung: {elapsed:.2f}s"
+    time.sleep(0.2)
+    # Child must not keep running (stamp frozen or absent after cleanup).
+    if stamp.exists() and stamp.read_text().strip() not in ("", "started"):
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.35)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "child survived after stdin registration failure cleanup"
+
+
+def test_group_kill_does_not_skip_on_leader_exit() -> None:
+    """_kill_process_group must signal the recorded pgid even if the leader is already dead."""
+    stamp = Path(_TMP) / "kill-after-leader"
+    if stamp.exists():
+        stamp.unlink()
+    # Manual mini harness: spawn group, wait for leader death, call kill helper.
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import os, signal, time\n"
+                f"stamp = {str(stamp)!r}\n"
+                "pid = os.fork()\n"
+                "if pid == 0:\n"
+                "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "    while True:\n"
+                "        open(stamp, 'w').write(str(time.time()))\n"
+                "        time.sleep(0.05)\n"
+                "raise SystemExit(0)\n"
+            ),
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pgid = os.getpgid(proc.pid)
+    proc.wait(timeout=5)
+    assert proc.returncode == 0
+    # Descendant should be alive writing stamp.
+    time.sleep(0.15)
+    assert stamp.exists(), "descendant did not start"
+    fc._kill_process_group(pgid=pgid, proc=proc)
+    time.sleep(0.3)
+    m1 = stamp.stat().st_mtime
+    time.sleep(0.4)
+    m2 = stamp.stat().st_mtime
+    assert m1 == m2, "kill helper returned while SIGTERM-ignoring descendant survived"
+
+
+def test_start_new_session_false_fail_closed_no_launch() -> None:
+    """start_new_session=False must raise before Popen; no child, no descendant leak."""
+    launch_count = {"n": 0}
+    real_popen = subprocess.Popen
+
+    def _guarded_popen(*a, **kw):  # type: ignore[no-untyped-def]
+        launch_count["n"] += 1
+        return real_popen(*a, **kw)
+
+    stamp = Path(_TMP) / "sns-false-leak"
+    if stamp.exists():
+        stamp.unlink()
+    old = subprocess.Popen
+    subprocess.Popen = _guarded_popen  # type: ignore[misc,assignment]
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import time\n"
+                        f"open({str(stamp)!r}, 'w').write('launched')\n"
+                        "time.sleep(30)\n"
+                    ),
+                ],
+                timeout=5,
+                max_stdout_bytes=512,
+                max_stderr_bytes=512,
+                start_new_session=False,
+            )
+        except ValueError as exc:
+            msg = str(exc).lower()
+            assert "start_new_session" in msg
+            assert "true" in msg or "isolation" in msg or "refusing" in msg
+        else:
+            raise AssertionError("start_new_session=False must fail closed before launch")
+    finally:
+        subprocess.Popen = old  # type: ignore[misc,assignment]
+
+    assert launch_count["n"] == 0, f"child launched despite fail-closed: {launch_count['n']}"
+    assert not stamp.exists(), "descendant/leak stamp must not exist when launch is refused"
+    # Also reject other non-True truthy misuse (e.g. 1 is not True for `is not True`).
+    try:
+        fc.run_bounded_subprocess(
+            [sys.executable, "-c", "print(1)"],
+            max_stdout_bytes=64,
+            start_new_session=0,  # type: ignore[arg-type]
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-True start_new_session must be rejected")
+
+
+def test_blockingio_eagain_keeps_fd_and_preserves_output() -> None:
+    """Transient BlockingIOError/EAGAIN must not be treated as EOF; later bytes survive."""
+    # Patch the capture-only read helper (not global os.read) so Popen errpipe is untouched.
+    real_read = fc._capture_os_read
+    state = {"blocking_left": 1, "saw_blocking": 0, "saw_data": 0}
+
+    def _adversarial_read(fd: int, n: int) -> bytes:  # type: ignore[no-untyped-def]
+        if state["blocking_left"] > 0:
+            state["blocking_left"] -= 1
+            state["saw_blocking"] += 1
+            raise BlockingIOError(errno.EAGAIN, "simulated transient EAGAIN")
+        data = real_read(fd, n)
+        if data:
+            state["saw_data"] += 1
+        return data
+
+    old = fc._capture_os_read
+    fc._capture_os_read = _adversarial_read  # type: ignore[assignment]
+    try:
+        rc, out, err = fc.run_bounded_subprocess(
+            [sys.executable, "-c", "import sys; sys.stdout.write('AFTER_EAGAIN_OK\\n')"],
+            timeout=10,
+            max_stdout_bytes=4096,
+            max_stderr_bytes=1024,
+        )
+    finally:
+        fc._capture_os_read = old  # type: ignore[assignment]
+
+    assert rc == 0, (rc, out, err)
+    assert state["saw_blocking"] >= 1, "adversarial BlockingIOError never fired"
+    assert "AFTER_EAGAIN_OK" in out, f"output lost after transient EAGAIN: {out!r}"
+    assert "capture_truncated" not in out
+
+
+def test_eagain_oserror_errno_keeps_fd() -> None:
+    """OSError(EAGAIN)/EWOULDBLOCK (not only BlockingIOError) must stay non-fatal."""
+    real_read = fc._capture_os_read
+    state = {"phase": 0}
+
+    def _eagain_then_data(fd: int, n: int) -> bytes:  # type: ignore[no-untyped-def]
+        if state["phase"] == 0:
+            state["phase"] = 1
+            raise OSError(errno.EAGAIN, "raw EAGAIN")
+        if state["phase"] == 1:
+            state["phase"] = 2
+            raise OSError(errno.EWOULDBLOCK, "raw EWOULDBLOCK")
+        return real_read(fd, n)
+
+    old = fc._capture_os_read
+    fc._capture_os_read = _eagain_then_data  # type: ignore[assignment]
+    try:
+        rc, out, err = fc.run_bounded_subprocess(
+            [sys.executable, "-c", "print('EAGAIN_OSERROR_OK')"],
+            timeout=10,
+            max_stdout_bytes=4096,
+            max_stderr_bytes=1024,
+        )
+    finally:
+        fc._capture_os_read = old  # type: ignore[assignment]
+
+    assert rc == 0, (rc, out, err)
+    assert "EAGAIN_OSERROR_OK" in out
+    assert state["phase"] >= 2
+
+
+def test_unrelated_process_not_killed_by_group_cleanup() -> None:
+    """Process-group cleanup must not signal an unrelated process outside the session."""
+    stamp = Path(_TMP) / "unrelated-alive"
+    if stamp.exists():
+        stamp.unlink()
+    # Unrelated peer: own session, writes stamp; must survive a bounded capture timeout.
+    peer = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import time\n"
+                f"stamp = {str(stamp)!r}\n"
+                "while True:\n"
+                "    open(stamp, 'w').write(str(time.time()))\n"
+                "    time.sleep(0.05)\n"
+            ),
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                timeout=0.4,
+                max_stdout_bytes=256,
+                max_stderr_bytes=256,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            raise AssertionError("expected TimeoutExpired for timed capture")
+        time.sleep(0.2)
+        assert peer.poll() is None, "unrelated peer was killed by capture cleanup"
+        assert stamp.exists(), "unrelated peer stamp missing"
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.25)
+        m2 = stamp.stat().st_mtime
+        assert m2 >= m1, "unrelated peer stopped updating stamp"
+    finally:
+        try:
+            os.killpg(os.getpgid(peer.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                peer.kill()
+            except OSError:
+                pass
+        try:
+            peer.wait(timeout=2)
+        except Exception:
+            pass
+
+
+def test_set_blocking_failure_still_completes() -> None:
+    """If os.set_blocking fails, capture must still complete (best-effort nonblocking)."""
+    real_set_blocking = os.set_blocking
+    calls = {"n": 0}
+
+    def _fail_set_blocking(fd: int, blocking: bool) -> None:  # type: ignore[no-untyped-def]
+        calls["n"] += 1
+        raise OSError(errno.EINVAL, "simulated set_blocking failure")
+
+    old = os.set_blocking
+    os.set_blocking = _fail_set_blocking  # type: ignore[assignment]
+    try:
+        rc, out, err = fc.run_bounded_subprocess(
+            [sys.executable, "-c", "print('NONBLOCK_FAIL_OK')"],
+            timeout=10,
+            max_stdout_bytes=4096,
+            max_stderr_bytes=1024,
+        )
+    finally:
+        os.set_blocking = old  # type: ignore[assignment]
+
+    assert calls["n"] >= 1
+    assert rc == 0, (rc, out, err)
+    assert "NONBLOCK_FAIL_OK" in out
+
+
+
+# --------------------------------------------------------------------------- #
 # Dispatch integration: unknown executor exit, dry-run defaults
 # --------------------------------------------------------------------------- #
 def test_dispatch_refuses_unknown_executor_and_dry_run_defaults() -> None:
@@ -516,6 +1210,185 @@ def test_dispatch_live_writes_owner_only_artifacts() -> None:
     assert _mode(handoff) == 0o600
 
 
+
+
+# --------------------------------------------------------------------------- #
+# 0.3.7 containment: setsid / double-fork / post-success mutation / cleanup fail
+# --------------------------------------------------------------------------- #
+def test_setsid_sigterm_ignore_descendant_killed() -> None:
+    """fork+setsid+SIGTERM-ignore must not survive past run_bounded_subprocess return."""
+    stamp = Path(_TMP) / "setsid-escape.stamp"
+    if stamp.exists():
+        stamp.unlink()
+    script = (
+        "import os, signal, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    while True:\n"
+        "        open(stamp, 'w').write(str(time.time()))\n"
+        "        time.sleep(0.05)\n"
+        "sys.exit(0)\n"
+    )
+    t0 = time.time()
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+    elapsed = time.time() - t0
+    assert elapsed < 8.0, f"setsid containment hung: {elapsed:.2f}s"
+    assert rc == 0, (rc, out, err)
+    time.sleep(0.3)
+    if stamp.exists():
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.4)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "setsid+SIGTERM-ignore descendant still alive after return"
+
+
+def test_double_fork_setsid_descendant_killed() -> None:
+    """double-fork + setsid escape must reparent to subreaper and be reaped/killed."""
+    stamp = Path(_TMP) / "double-fork-escape.stamp"
+    if stamp.exists():
+        stamp.unlink()
+    script = (
+        "import os, signal, sys, time\n"
+        f"stamp = {str(stamp)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    pid2 = os.fork()\n"
+        "    if pid2 == 0:\n"
+        "        os.setsid()\n"
+        "        signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "        while True:\n"
+        "            open(stamp, 'w').write(str(time.time()))\n"
+        "            time.sleep(0.05)\n"
+        "    os._exit(0)\n"
+        "sys.exit(0)\n"
+    )
+    t0 = time.time()
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+    elapsed = time.time() - t0
+    assert elapsed < 8.0, f"double-fork containment hung: {elapsed:.2f}s"
+    assert rc == 0, (rc, out, err)
+    time.sleep(0.3)
+    if stamp.exists():
+        m1 = stamp.stat().st_mtime
+        time.sleep(0.4)
+        m2 = stamp.stat().st_mtime
+        assert m1 == m2, "double-fork setsid descendant still alive after return"
+
+
+def test_setsid_escape_cannot_mutate_after_return() -> None:
+    """Escaped child must not mutate a tracked-like file after nominal parent success."""
+    target = Path(_TMP) / "tracked-after-return.txt"
+    target.write_text("clean\n", encoding="utf-8")
+    script = (
+        "import os, signal, sys, time\n"
+        f"target = {str(target)!r}\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    os.setsid()\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    # Delay past full TERM+KILL quiesce; mutate only if escape survived return.\n"
+        "    time.sleep(6.0)\n"
+        "    with open(target, 'a', encoding='utf-8') as fh:\n"
+        "        fh.write('late-mutation\\n')\n"
+        "    while True:\n"
+        "        time.sleep(0.2)\n"
+        "sys.exit(0)\n"
+    )
+    rc, out, err = fc.run_bounded_subprocess(
+        [sys.executable, "-c", script],
+        timeout=10,
+        max_stdout_bytes=1024,
+        max_stderr_bytes=1024,
+    )
+    assert rc == 0, (rc, out, err)
+    # Observe well past the delayed mutation window.
+    time.sleep(7.0)
+    body = target.read_text(encoding="utf-8")
+    assert "late-mutation" not in body, f"escaped child mutated after return: {body!r}"
+    assert body == "clean\n"
+
+
+def test_containment_cleanup_failure_raises() -> None:
+    """If supervisor cannot prove containment_ok, parent must raise ContainmentError."""
+    # Force a fake result path failure by monkeypatching _read_containment_result.
+    real = fc._read_containment_result
+    fc._read_containment_result = lambda path: {  # type: ignore[assignment]
+        "worker_rc": 0,
+        "containment_ok": False,
+        "error": "injected cleanup failure",
+        "supervisor_pid": 0,
+    }
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [sys.executable, "-c", "print('x')"],
+                timeout=10,
+                max_stdout_bytes=512,
+                max_stderr_bytes=512,
+            )
+        except fc.ContainmentError as exc:
+            msg = str(exc).lower()
+            assert "containment" in msg
+            assert "cleanup" in msg or "failed" in msg
+        else:
+            raise AssertionError("expected ContainmentError on cleanup failure")
+    finally:
+        fc._read_containment_result = real  # type: ignore[assignment]
+
+
+def test_missing_containment_result_fail_closed() -> None:
+    """Missing supervisor result receipt must refuse success."""
+    real = fc._read_containment_result
+    fc._read_containment_result = lambda path: None  # type: ignore[assignment]
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [sys.executable, "-c", "print('y')"],
+                timeout=10,
+                max_stdout_bytes=512,
+                max_stderr_bytes=512,
+            )
+        except fc.ContainmentError as exc:
+            assert "missing" in str(exc).lower() or "refusing" in str(exc).lower()
+        else:
+            raise AssertionError("expected ContainmentError when result missing")
+    finally:
+        fc._read_containment_result = real  # type: ignore[assignment]
+
+
+def test_descendant_containment_required() -> None:
+    """Containment gate is explicit; non-Linux is rejected before launch when simulated."""
+    assert fc.descendant_containment_supported() is True
+    real = fc.descendant_containment_supported
+    fc.descendant_containment_supported = lambda: False  # type: ignore[assignment]
+    try:
+        try:
+            fc.run_bounded_subprocess(
+                [sys.executable, "-c", "print(1)"],
+                max_stdout_bytes=64,
+            )
+        except fc.ContainmentError as exc:
+            assert "subreaper" in str(exc).lower() or "containment" in str(exc).lower()
+        else:
+            raise AssertionError("missing containment must fail closed before launch")
+    finally:
+        fc.descendant_containment_supported = real  # type: ignore[assignment]
+
+
+
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
@@ -537,6 +1410,32 @@ def main() -> int:
         test_codex_stdin_transport_preserved,
         test_timeout_terminates_process_group,
         test_run_engine_success_and_missing_binary,
+        test_hostile_stdout_overflow_capped,
+        test_simultaneous_dual_stream_overflow,
+        test_timeout_descendant_killed_under_bounded_capture,
+        test_invalid_capture_limits_rejected_before_launch,
+        test_non_utf8_output_replaced,
+        test_truncation_marker_has_no_prompt_content,
+        test_parent_exits_first_inherited_silent_pipe_no_hang,
+        test_parent_exits_first_descendant_closes_stdio_stamp_file,
+        test_marker_spoof_no_truncation_disambiguated,
+        test_marker_spoof_with_real_truncation_authentic_appended,
+        test_posix_platform_contract_helpers,
+        test_exact_byte_cap_and_multibyte_boundary,
+        test_normal_success_and_timeout_paths,
+        test_stdin_selector_registration_failure_cleans_group,
+        test_group_kill_does_not_skip_on_leader_exit,
+        test_start_new_session_false_fail_closed_no_launch,
+        test_blockingio_eagain_keeps_fd_and_preserves_output,
+        test_eagain_oserror_errno_keeps_fd,
+        test_unrelated_process_not_killed_by_group_cleanup,
+        test_descendant_containment_required,
+        test_missing_containment_result_fail_closed,
+        test_containment_cleanup_failure_raises,
+        test_setsid_escape_cannot_mutate_after_return,
+        test_double_fork_setsid_descendant_killed,
+        test_setsid_sigterm_ignore_descendant_killed,
+        test_set_blocking_failure_still_completes,
         test_dispatch_refuses_unknown_executor_and_dry_run_defaults,
         test_dispatch_live_writes_owner_only_artifacts,
     ]
