@@ -1045,6 +1045,435 @@ def test_stop_gate_contracts() -> None:
             fc.clear_state(sid)
 
 
+def test_dispatch_task_count_hard_cap() -> None:
+    """One dispatch cannot schedule unbounded provider tasks; overflow refuses without markers."""
+    default_limit = frontier_dispatch.DEFAULT_MAX_TASKS_PER_DISPATCH
+    ceiling = frontier_dispatch.MAX_TASKS_HARD_CEILING
+    assert default_limit == 32
+    assert ceiling == 64
+    assert 1 <= default_limit <= ceiling
+
+    help_text = " ".join(frontier_dispatch._build_parser().format_help().split())
+    assert str(default_limit) in help_text
+    assert "hard" in help_text.lower() or "cap" in help_text.lower()
+    assert "informational" in help_text.lower() or "not enforced" in help_text.lower()
+
+    # Unit: default and env clamp (no config schema).
+    old_max = _env("FRONTIER_MAX_TASKS", None)
+    try:
+        assert frontier_dispatch.max_tasks_per_dispatch() == default_limit
+        _env("FRONTIER_MAX_TASKS", "8")
+        assert frontier_dispatch.max_tasks_per_dispatch() == 8
+        _env("FRONTIER_MAX_TASKS", str(ceiling))
+        assert frontier_dispatch.max_tasks_per_dispatch() == ceiling
+        for bad in ("0", str(ceiling + 1), "nope", "-3"):
+            _env("FRONTIER_MAX_TASKS", bad)
+            try:
+                frontier_dispatch.max_tasks_per_dispatch()
+                raise AssertionError(f"expected ValueError for FRONTIER_MAX_TASKS={bad!r}")
+            except ValueError as exc:
+                assert "FRONTIER_MAX_TASKS" in str(exc)
+    finally:
+        _restore("FRONTIER_MAX_TASKS", old_max)
+
+    sid = "contract-task-cap"
+    fc.clear_state(sid)
+    # Clear any inherited FRONTIER_MAX_TASKS for subprocess boundary tests.
+    base_env = {"FRONTIER_SESSION_ID": sid}
+    old_env_max = os.environ.pop("FRONTIER_MAX_TASKS", None)
+
+    try:
+        # Boundary: exactly default_limit positional tasks succeeds (dry-run; no provider).
+        ok_tasks = [f"task-{i}" for i in range(default_limit)]
+        proc = _run_dispatch(["--dry-run", *ok_tasks], extra_env=base_env)
+        assert proc.returncode == 0, f"boundary dry-run failed: {proc.stderr!r} {proc.stdout!r}"
+        payload = json.loads(proc.stdout)
+        assert payload["count"] == default_limit
+
+        # Overflow: default_limit + 1 refuses before mutation (non-dry-run).
+        before = fc.read_state(sid)
+        before_gen = int(before.get("dispatch_generation") or 0)
+        before_active = list(before.get("active_dispatches") or [])
+        runs_before = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+        over = [f"overflow-{i}" for i in range(default_limit + 1)]
+        proc = _run_dispatch(over, extra_env=base_env)
+        assert proc.returncode == 2, f"overflow should refuse; rc={proc.returncode} err={proc.stderr!r}"
+        assert "dispatch refused" in proc.stderr
+        assert "hard limit" in proc.stderr
+        assert str(default_limit) in proc.stderr
+        assert "dollar" in proc.stderr.lower() or "budget" in proc.stderr.lower()
+        after = fc.read_state(sid)
+        assert list(after.get("active_dispatches") or []) == before_active
+        assert int(after.get("dispatch_generation") or 0) == before_gen
+        runs_after = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+        assert runs_after == runs_before, "overflow must not create a dispatch run directory"
+
+        # Fanout-file overflow (same cap as positional).
+        with tempfile.TemporaryDirectory(prefix="frontier-fanout-") as td:
+            fanout_path = Path(td) / "tasks.json"
+            fanout_path.write_text(json.dumps([f"fan-{i}" for i in range(default_limit + 1)]), encoding="utf-8")
+            proc = _run_dispatch(["--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+            assert "hard limit" in proc.stderr
+            after_fan = fc.read_state(sid)
+            assert list(after_fan.get("active_dispatches") or []) == before_active
+            assert int(after_fan.get("dispatch_generation") or 0) == before_gen
+
+            # Combined positional + fanout count against the same limit.
+            fanout_path.write_text(json.dumps([f"c-fan-{i}" for i in range(default_limit // 2 + 1)]),
+                                   encoding="utf-8")
+            pos = [f"c-pos-{i}" for i in range(default_limit // 2)]
+            proc = _run_dispatch([*pos, "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "hard limit" in proc.stderr
+
+            # Boundary via fanout exactly at limit.
+            fanout_path.write_text(json.dumps([f"ok-fan-{i}" for i in range(default_limit)]),
+                                   encoding="utf-8")
+            proc = _run_dispatch(["--dry-run", "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 0, f"fanout boundary failed: {proc.stderr!r}"
+            assert json.loads(proc.stdout)["count"] == default_limit
+
+            # Malformed fanout: not a list.
+            fanout_path.write_text(json.dumps({"task": "x"}), encoding="utf-8")
+            proc = _run_dispatch(["--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+            assert "JSON list" in proc.stderr or "list" in proc.stderr
+
+            # Malformed fanout: invalid JSON.
+            fanout_path.write_text("{not-json", encoding="utf-8")
+            proc = _run_dispatch(["--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+
+            # Malformed fanout: bad item type.
+            fanout_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+            proc = _run_dispatch(["--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+
+            # Duplicate task strings are allowed (not a uniqueness constraint).
+            fanout_path.write_text(json.dumps(["same", "same", "same"]), encoding="utf-8")
+            proc = _run_dispatch(["--dry-run", "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 0, f"duplicate fanout should be allowed: {proc.stderr!r}"
+            assert json.loads(proc.stdout)["count"] == 3
+
+            # Object form + empty/whitespace filtered before counting.
+            # Empty/whitespace remain intentionally filtered (present non-null task field).
+            fanout_path.write_text(
+                json.dumps(["keep", {"task": "also"}, "", "  ", {"task": ""}, {"task": "  "}]),
+                encoding="utf-8",
+            )
+            proc = _run_dispatch(["--dry-run", "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 0
+            assert json.loads(proc.stdout)["count"] == 2
+
+            # Mixed fanout: missing task key with a valid item → refuse whole batch.
+            # Non-dry-run + provider sentinel: no config/state/run-dir/provider side effects.
+            sentinel = Path(td) / "provider_sentinel"
+            provider_script = Path(td) / "provider_touch.py"
+            provider_script.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            provider_cmd = f"{sys.executable} {provider_script}"
+            if sentinel.exists():
+                sentinel.unlink()
+            mixed_missing = [
+                {"task": "valid-keep"},
+                {"note": "no task key"},
+            ]
+            fanout_path.write_text(json.dumps(mixed_missing), encoding="utf-8")
+            state_before = fc.read_state(sid)
+            before_gen = int(state_before.get("dispatch_generation") or 0)
+            before_active = list(state_before.get("active_dispatches") or [])
+            runs_before = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            proc = _run_dispatch(
+                ["--fanout", str(fanout_path)],
+                extra_env={**base_env, "FRONTIER_BODY_CMD": provider_cmd},
+            )
+            assert proc.returncode == 2, (
+                f"missing task in mixed fanout must refuse; rc={proc.returncode} "
+                f"err={proc.stderr!r} out={proc.stdout!r}"
+            )
+            assert "dispatch refused" in proc.stderr
+            assert "non-null" in proc.stderr.lower() or "task" in proc.stderr.lower()
+            assert not sentinel.exists(), "provider sentinel must not run on malformed fanout"
+            state_after = fc.read_state(sid)
+            assert list(state_after.get("active_dispatches") or []) == before_active
+            assert int(state_after.get("dispatch_generation") or 0) == before_gen
+            runs_after = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            assert runs_after == runs_before, "malformed fanout must not create a run directory"
+
+            # Mixed fanout: null task with a valid item → same fail-closed refuse.
+            if sentinel.exists():
+                sentinel.unlink()
+            mixed_null = [
+                "string-valid",
+                {"task": None},
+                {"task": "would-have-run"},
+            ]
+            fanout_path.write_text(json.dumps(mixed_null), encoding="utf-8")
+            state_before = fc.read_state(sid)
+            before_gen = int(state_before.get("dispatch_generation") or 0)
+            before_active = list(state_before.get("active_dispatches") or [])
+            runs_before = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            proc = _run_dispatch(
+                ["--fanout", str(fanout_path)],
+                extra_env={**base_env, "FRONTIER_BODY_CMD": provider_cmd},
+            )
+            assert proc.returncode == 2, (
+                f"null task in mixed fanout must refuse; rc={proc.returncode} "
+                f"err={proc.stderr!r} out={proc.stdout!r}"
+            )
+            assert "dispatch refused" in proc.stderr
+            assert "non-null" in proc.stderr.lower() or "task" in proc.stderr.lower()
+            assert not sentinel.exists(), "provider sentinel must not run on null-task fanout"
+            state_after = fc.read_state(sid)
+            assert list(state_after.get("active_dispatches") or []) == before_active
+            assert int(state_after.get("dispatch_generation") or 0) == before_gen
+            runs_after = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            assert runs_after == runs_before, "null-task fanout must not create a run directory"
+
+            # Unit: _collect_dispatch_tasks raises before any caller can dispatch partial lists.
+            from types import SimpleNamespace
+            for bad_payload in (
+                [{"task": "ok"}, {}],
+                [{"task": "ok"}, {"task": None}],
+            ):
+                fanout_path.write_text(json.dumps(bad_payload), encoding="utf-8")
+                try:
+                    frontier_dispatch._collect_dispatch_tasks(
+                        SimpleNamespace(tasks=[], fanout=str(fanout_path))
+                    )
+                    raise AssertionError(f"expected ValueError for {bad_payload!r}")
+                except ValueError as exc:
+                    msg = str(exc).lower()
+                    assert "task" in msg
+                    assert "non-null" in msg or "must include" in msg
+
+        # Explicit lower per-invocation limit via FRONTIER_MAX_TASKS.
+        tight = {**base_env, "FRONTIER_MAX_TASKS": "2"}
+        proc = _run_dispatch(["--dry-run", "a", "b"], extra_env=tight)
+        assert proc.returncode == 0
+        proc = _run_dispatch(["a", "b", "c"], extra_env=tight)
+        assert proc.returncode == 2
+        assert "hard limit of 2" in proc.stderr
+        after_tight = fc.read_state(sid)
+        assert list(after_tight.get("active_dispatches") or []) == []
+        assert int(after_tight.get("dispatch_generation") or 0) == before_gen
+
+        # Invalid FRONTIER_MAX_TASKS refuses without markers.
+        proc = _run_dispatch(["--dry-run", "only"], extra_env={**base_env, "FRONTIER_MAX_TASKS": "999"})
+        assert proc.returncode == 2
+        assert "dispatch refused" in proc.stderr
+        assert "FRONTIER_MAX_TASKS" in proc.stderr
+    finally:
+        if old_env_max is None:
+            os.environ.pop("FRONTIER_MAX_TASKS", None)
+        else:
+            os.environ["FRONTIER_MAX_TASKS"] = old_env_max
+        fc.clear_state(sid)
+
+
+
+def test_dispatch_fanout_bounded_reader() -> None:
+    """Fanout path is fail-closed: non-regular/oversized/bad UTF-8 refuse without hanging or side effects."""
+    import os
+    import threading
+    from types import SimpleNamespace
+
+    max_b = frontier_dispatch.MAX_FANOUT_FILE_BYTES
+    assert isinstance(max_b, int) and max_b > 0
+    assert max_b <= 4 * 1024 * 1024  # conservative named bound
+
+    sid = "contract-fanout-bounded"
+    fc.clear_state(sid)
+    base_env = {"FRONTIER_SESSION_ID": sid}
+    old_env_max = os.environ.pop("FRONTIER_MAX_TASKS", None)
+
+    def _assert_value_error_quick(path: Path, *, label: str, timeout_s: float = 2.0) -> None:
+        """Call the unit reader under an outer timeout so tests never hang on FIFO/special."""
+        box: dict = {}
+
+        def target() -> None:
+            try:
+                frontier_dispatch._read_fanout_file_text(path)
+                box["err"] = None
+            except Exception as exc:  # noqa: BLE001 — capture for parent thread
+                box["err"] = exc
+
+        thr = threading.Thread(target=target, daemon=True)
+        thr.start()
+        thr.join(timeout=timeout_s)
+        assert not thr.is_alive(), f"{label}: reader hung past {timeout_s}s on {path}"
+        assert isinstance(box.get("err"), ValueError), (
+            f"{label}: expected ValueError, got {box.get('err')!r}"
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="frontier-fanout-bound-") as td:
+            td_path = Path(td)
+            fanout_path = td_path / "tasks.json"
+
+            # --- happy path still works ---
+            fanout_path.write_text(json.dumps(["ok-a", "ok-b"]), encoding="utf-8")
+            text = frontier_dispatch._read_fanout_file_text(fanout_path)
+            assert json.loads(text) == ["ok-a", "ok-b"]
+            proc = _run_dispatch(["--dry-run", "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 0, proc.stderr
+            assert json.loads(proc.stdout)["count"] == 2
+
+            # --- FIFO: nonblocking open + fstat refuse; must not hang ---
+            fifo_path = td_path / "fanout.fifo"
+            os.mkfifo(fifo_path)
+            _assert_value_error_quick(fifo_path, label="FIFO unit")
+            # Subprocess path with outer timeout (tests themselves never hang).
+            proc = _run_dispatch(["--fanout", str(fifo_path)], extra_env=base_env)
+            assert proc.returncode == 2, f"FIFO must refuse; rc={proc.returncode} err={proc.stderr!r}"
+            assert "dispatch refused" in proc.stderr
+
+            # --- symlink → special (/dev/zero): refuse without unbounded read ---
+            zero = Path("/dev/zero")
+            if zero.exists():
+                link_zero = td_path / "to-zero"
+                link_zero.symlink_to(zero)
+                _assert_value_error_quick(link_zero, label="symlink-/dev/zero unit")
+                proc = _run_dispatch(["--fanout", str(link_zero)], extra_env=base_env)
+                assert proc.returncode == 2
+                assert "dispatch refused" in proc.stderr
+            else:
+                # Fallback special target when /dev/zero is absent.
+                null = Path("/dev/null")
+                assert null.exists(), "need /dev/zero or /dev/null for special-file test"
+                link_null = td_path / "to-null"
+                link_null.symlink_to(null)
+                _assert_value_error_quick(link_null, label="symlink-/dev/null unit")
+                proc = _run_dispatch(["--fanout", str(link_null)], extra_env=base_env)
+                assert proc.returncode == 2
+                assert "dispatch refused" in proc.stderr
+
+            # --- symlink → regular file may still work ---
+            real = td_path / "real.json"
+            real.write_text(json.dumps(["via-link"]), encoding="utf-8")
+            link_reg = td_path / "to-real.json"
+            link_reg.symlink_to(real)
+            text = frontier_dispatch._read_fanout_file_text(link_reg)
+            assert json.loads(text) == ["via-link"]
+            proc = _run_dispatch(["--dry-run", "--fanout", str(link_reg)], extra_env=base_env)
+            assert proc.returncode == 0, proc.stderr
+            assert json.loads(proc.stdout)["count"] == 1
+
+            # --- oversized regular file (st_size and/or limit+1 growth path) ---
+            over = td_path / "over.json"
+            # Write max+1 bytes of 'x' so JSON is invalid but size check fails first.
+            over.write_bytes(b"x" * (max_b + 1))
+            _assert_value_error_quick(over, label="oversized unit")
+            proc = _run_dispatch(["--fanout", str(over)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+
+            # --- invalid UTF-8 ---
+            bad_utf = td_path / "bad-utf.json"
+            bad_utf.write_bytes(b'["ok", \xff\xfe]')
+            _assert_value_error_quick(bad_utf, label="invalid-utf8 unit")
+            try:
+                frontier_dispatch._collect_dispatch_tasks(
+                    SimpleNamespace(tasks=[], fanout=str(bad_utf))
+                )
+                raise AssertionError("expected ValueError for invalid UTF-8")
+            except ValueError as exc:
+                assert "utf-8" in str(exc).lower() or "utf8" in str(exc).lower() or "cannot" in str(exc).lower()
+            proc = _run_dispatch(["--fanout", str(bad_utf)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+
+            # --- unreadable input (missing path) ---
+            missing = td_path / "no-such-fanout.json"
+            _assert_value_error_quick(missing, label="missing unit")
+            proc = _run_dispatch(["--fanout", str(missing)], extra_env=base_env)
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+
+            # Unreadable via mode bits when possible (skip if root / no effect).
+            locked = td_path / "locked.json"
+            locked.write_text(json.dumps(["secret"]), encoding="utf-8")
+            locked.chmod(0o000)
+            try:
+                try:
+                    with open(locked, "rb"):
+                        can_read = True
+                except OSError:
+                    can_read = False
+                if not can_read:
+                    _assert_value_error_quick(locked, label="mode-000 unit")
+                    proc = _run_dispatch(["--fanout", str(locked)], extra_env=base_env)
+                    assert proc.returncode == 2
+                    assert "dispatch refused" in proc.stderr
+            finally:
+                locked.chmod(0o600)
+
+            # --- no-side-effect / provider sentinel on bounded-reader failure ---
+            sentinel = td_path / "provider_sentinel"
+            provider_script = td_path / "provider_touch.py"
+            provider_script.write_text(
+                "from pathlib import Path\n"
+                f"Path({str(sentinel)!r}).write_text('called', encoding='utf-8')\n",
+                encoding="utf-8",
+            )
+            provider_cmd = f"{sys.executable} {provider_script}"
+            if sentinel.exists():
+                sentinel.unlink()
+            # Use FIFO so failure is definitely in the bounded reader, not JSON parse.
+            bad_fifo = td_path / "side-effect.fifo"
+            os.mkfifo(bad_fifo)
+            state_before = fc.read_state(sid)
+            before_gen = int(state_before.get("dispatch_generation") or 0)
+            before_active = list(state_before.get("active_dispatches") or [])
+            runs_before = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            proc = _run_dispatch(
+                ["--fanout", str(bad_fifo)],
+                extra_env={**base_env, "FRONTIER_BODY_CMD": provider_cmd},
+            )
+            assert proc.returncode == 2
+            assert "dispatch refused" in proc.stderr
+            assert not sentinel.exists(), "provider sentinel must not run on non-regular fanout"
+            state_after = fc.read_state(sid)
+            assert list(state_after.get("active_dispatches") or []) == before_active
+            assert int(state_after.get("dispatch_generation") or 0) == before_gen
+            runs_after = set(fc.RUNS_DIR.glob("frontier-*")) if fc.RUNS_DIR.is_dir() else set()
+            assert runs_after == runs_before, "non-regular fanout must not create a run directory"
+
+            # Preserve empty-filtering + mixed missing/null fail-closed semantics.
+            fanout_path.write_text(
+                json.dumps(["keep", "", "  ", {"task": "also"}, {"task": ""}]),
+                encoding="utf-8",
+            )
+            proc = _run_dispatch(["--dry-run", "--fanout", str(fanout_path)], extra_env=base_env)
+            assert proc.returncode == 0
+            assert json.loads(proc.stdout)["count"] == 2
+
+            fanout_path.write_text(json.dumps([{"task": "ok"}, {"task": None}]), encoding="utf-8")
+            if sentinel.exists():
+                sentinel.unlink()
+            proc = _run_dispatch(
+                ["--fanout", str(fanout_path)],
+                extra_env={**base_env, "FRONTIER_BODY_CMD": provider_cmd},
+            )
+            assert proc.returncode == 2
+            assert not sentinel.exists()
+    finally:
+        if old_env_max is None:
+            os.environ.pop("FRONTIER_MAX_TASKS", None)
+        else:
+            os.environ["FRONTIER_MAX_TASKS"] = old_env_max
+        fc.clear_state(sid)
+
+
+
 def main() -> int:
     tests = [
         test_resolve_config_precedence,
@@ -1075,6 +1504,8 @@ def main() -> int:
         test_arm_freezes_verification_command,
         test_cmd_done_refuses_without_fresh_green,
         test_stop_gate_contracts,
+        test_dispatch_task_count_hard_cap,
+        test_dispatch_fanout_bounded_reader,
     ]
     failed = 0
     for test in tests:

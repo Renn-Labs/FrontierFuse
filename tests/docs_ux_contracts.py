@@ -13,6 +13,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import frontier_dispatch as dispatch  # noqa: E402
 
 DOC_PATHS = [
     ROOT / "README.md",
@@ -58,6 +62,31 @@ def test_settings_hooks_snippet_is_valid_json() -> None:
     comment = data.get("//", "")
     assert "Option B" in comment or "install-hooks" in comment
     assert "not a sandbox" in comment.lower() or "workflow guardrail" in comment.lower()
+    pre_matchers = {e.get("matcher") for e in data["hooks"]["PreToolUse"]}
+    assert pre_matchers & {"", "*"}, f"snippet PreToolUse must cover all tools: {pre_matchers!r}"
+    stop_matchers = {e.get("matcher") for e in data["hooks"]["Stop"]}
+    assert "*" in stop_matchers
+    # Official exec form: command=python3, args=[one <REPO> script path], aligned timeout.
+    for event in ("PreToolUse", "Stop"):
+        for entry in data["hooks"][event]:
+            for hook in entry.get("hooks", []):
+                if hook.get("type") != "command":
+                    continue
+                assert hook.get("timeout") == dispatch.HOOK_COMMAND_TIMEOUT, (
+                    f"snippet {event} timeout mismatch: {hook!r}"
+                )
+                assert hook.get("command") == "python3", (
+                    f"snippet {event} must use exec-form command=python3: {hook!r}"
+                )
+                args = hook.get("args")
+                assert isinstance(args, list) and len(args) == 1, (
+                    f"snippet {event} must have exactly one args path: {hook!r}"
+                )
+                assert args[0].startswith("<REPO>/hooks/"), (
+                    f"snippet {event} args must use <REPO> placeholder: {args!r}"
+                )
+                # No shell-form script path in the command field.
+                assert "/hooks/" not in str(hook.get("command", ""))
 
 
 def test_markdown_fences_balanced_in_docs_lane() -> None:
@@ -98,7 +127,7 @@ def test_readme_install_lifecycle_paths() -> None:
         "intentionally has no `--` separator",
         "last-known-good",
         "git pull --ff-only",
-        "0.3.6",
+        "0.3.7",
     ):
         assert needle in readme, f"README.md missing install/lifecycle needle {needle!r}"
 
@@ -157,10 +186,10 @@ def test_no_stale_active_0_3_2_baseline() -> None:
     design = _read(ROOT / "docs" / "DESIGN.md")
     readme = _read(ROOT / "README.md")
     assert "Architecture (0.3.2)" not in design
-    assert "Architecture (0.3.6)" in design or "0.3.6" in design
+    assert "Architecture (0.3.7)" in design or "0.3.7" in design
     assert "active build is `0.3.2`" not in plan
-    assert "0.3.6" in plan and "Shipped baseline" in plan
-    assert "0.3.6" in readme
+    assert "0.3.7" in plan and "Shipped baseline" in plan
+    assert "0.3.7" in readme
     # Historical delivered section may still name 0.3.2 as a past release.
     assert "Release 0.3.2" in plan or "0.3.2" in plan
 

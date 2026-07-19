@@ -13,6 +13,10 @@ Subcommands:
   dispatch "task" [...]        run one selected body/lead executor (or several with --parallel)
   --parallel / -p t...         fan out N concurrent bodies (cap FRONTIER_MAX_PARALLEL, default 4)
   --fanout tasks.json          fan out tasks from a JSON list (strings or {"task": ...})
+                               Total non-empty tasks (positional + fanout) are hard-capped
+                               (DEFAULT_MAX_TASKS_PER_DISPATCH / FRONTIER_MAX_TASKS, hard
+                               ceiling MAX_TASKS_HARD_CEILING). Overflow refuses before any
+                               state mutation or provider call. --budget-usd is informational only.
   arm --gate "pytest -q"       arm and freeze a host-approved acceptance gate
   disarm | done                explicitly override, or close on snapshot-bound GREEN
   verify                       run the frozen gate while armed -> verdict.json
@@ -32,9 +36,11 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import shlex
 import shutil
 import stat
 import sys
+import subprocess
 import time
 from pathlib import Path
 
@@ -47,14 +53,21 @@ SESSION_ID = (os.environ.get("FRONTIER_SESSION_ID")
               or "default")
 MAX_PARALLEL = int(os.environ.get("FRONTIER_MAX_PARALLEL", "4"))
 BODY_TIMEOUT = int(os.environ.get("FRONTIER_BODY_TIMEOUT", "900"))
+# Per-invocation task count boundary (before managed mode). Concurrency stays MAX_PARALLEL;
+# this caps how many provider tasks a single dispatch may schedule. Not a dollar budget.
+MAX_TASKS_HARD_CEILING = 64
+DEFAULT_MAX_TASKS_PER_DISPATCH = 32
+# Conservative bound for --fanout file contents (fail-closed before JSON parse).
+MAX_FANOUT_FILE_BYTES = 1 * 1024 * 1024
 SUBCOMMANDS = {"dispatch", "arm", "disarm", "done", "verify", "config", "models", "doctor", "update",
-               "install-hooks", "uninstall-hooks"}
+               "install-hooks", "uninstall-hooks", "topology", "role", "consult"}
 
 _EXECUTOR_MODEL_KEYS = {
     "codex": "codex_model",
     "claude": "claude_model",
     "grok": "grok_model",
     "gemini": "gemini_model",
+    "openrouter": "openrouter_model",
 }
 # Provider-specific model CLI flags that must not be combined with --executor-model/--model
 # for the selected executor (Codex has no separate provider model flag).
@@ -68,6 +81,8 @@ _PROVIDER_CLI_NAMES = {
     "claude": "claude",
     "grok": "grok",
     "gemini": "gemini",
+    # OpenRouter is HTTP (no PATH CLI). Doctor treats key presence separately.
+    "openrouter": "openrouter",
 }
 # Doctor JSON statement: PATH presence is not auth or entitlement.
 AVAILABILITY_NOTE = (
@@ -99,6 +114,8 @@ def _default_frontier_model_for(provider: str) -> str:
         return "grok-4.5"
     if provider == "gemini":
         return "gemini-3.5-flash"
+    if provider == "openrouter":
+        return "openrouter/auto"
     return ""
 
 
@@ -130,7 +147,11 @@ def suggest_provider_availability(
     present = {
         provider: bool(which(cli_name))
         for provider, cli_name in _PROVIDER_CLI_NAMES.items()
+        if provider != "openrouter"
     }
+    # OpenRouter is HTTP; "present" means a key is configured (not entitlement proof).
+    import os as _os
+    present["openrouter"] = bool((_os.environ.get("OPENROUTER_API_KEY") or "").strip())
     present_list = sorted(provider for provider, ok in present.items() if ok)
 
     executor = str(cfg.get("executor") or "codex").lower()
@@ -278,6 +299,133 @@ def _overrides(args) -> dict:
     return ov
 
 
+def max_tasks_per_dispatch() -> int:
+    """Effective hard task-count limit for one dispatch invocation.
+
+    Default DEFAULT_MAX_TASKS_PER_DISPATCH; FRONTIER_MAX_TASKS may raise or lower it
+    within 1..MAX_TASKS_HARD_CEILING. Invalid values raise ValueError (caller refuses).
+    This is not related to --budget-usd (informational only).
+    """
+    raw = (os.environ.get("FRONTIER_MAX_TASKS") or "").strip()
+    if not raw:
+        return DEFAULT_MAX_TASKS_PER_DISPATCH
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"FRONTIER_MAX_TASKS must be an integer between 1 and {MAX_TASKS_HARD_CEILING}"
+        ) from exc
+    if value < 1 or value > MAX_TASKS_HARD_CEILING:
+        raise ValueError(
+            f"FRONTIER_MAX_TASKS={value} out of range; must be 1..{MAX_TASKS_HARD_CEILING}"
+        )
+    return value
+
+
+def _read_fanout_file_text(path: Path | str) -> str:
+    """Fail-closed bounded read of a fanout JSON path (POSIX Linux/macOS).
+
+    Opens with a nonblocking descriptor, fstats the opened fd, accepts only regular
+    files, enforces MAX_FANOUT_FILE_BYTES before and during read (at most limit+1
+    bytes so concurrent growth cannot bypass), and decodes UTF-8 strictly. Symlink
+    targets that are regular files are allowed; FIFO/symlink-to-special refuse
+    without blocking. All failures become ValueError for cmd_dispatch → exit 2.
+    """
+    p = Path(path)
+    flags = os.O_RDONLY
+    # O_NONBLOCK: open of FIFO must not block waiting for a writer (Linux/macOS).
+    flags |= getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    # Intentionally omit O_NOFOLLOW so symlink→regular remains supported.
+    try:
+        fd = os.open(p, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+    try:
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"fanout file {p} is not a regular file")
+        limit = MAX_FANOUT_FILE_BYTES
+        if opened.st_size > limit:
+            raise ValueError(f"fanout file {p} exceeds {limit} bytes")
+        chunks: list[bytes] = []
+        remaining = limit + 1  # read at most limit+1 so growth cannot bypass
+        while remaining > 0:
+            try:
+                chunk = os.read(fd, min(64 * 1024, remaining))
+            except BlockingIOError as exc:
+                raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+            except OSError as exc:
+                raise ValueError(f"cannot read fanout file {p}: {exc}") from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > limit:
+            raise ValueError(f"fanout file {p} exceeds {limit} bytes")
+        try:
+            return raw.decode("utf-8")  # strict
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"fanout file {p} is not valid UTF-8: {exc}") from exc
+    finally:
+        os.close(fd)
+
+
+def _collect_dispatch_tasks(args) -> list[str]:
+    """Collect non-empty tasks from positional args and optional fanout file.
+
+    Raises ValueError on malformed fanout (not a JSON list, bad item types, unreadable/
+    invalid/oversized/non-regular/non-UTF-8 input, or object items missing a non-null ``task``
+    field). Fail-closed: a single bad object refuses the whole fanout before config resolution,
+    state mutation, run dirs, or providers. Fanout bytes are read via a nonblocking regular-file
+    bound (MAX_FANOUT_FILE_BYTES). Empty/whitespace task strings remain intentionally filtered
+    after collection (not errors). Does not mutate session state or call providers.
+    """
+    tasks: list[str] = list(args.tasks or [])
+    fanout = getattr(args, "fanout", "") or ""
+    if fanout:
+        path = Path(fanout)
+        text = _read_fanout_file_text(path)
+        try:
+            raw = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"fanout file is not valid JSON: {exc}") from exc
+        if not isinstance(raw, list):
+            raise ValueError("fanout must be a JSON list of strings or {\"task\": ...} objects")
+        for index, item in enumerate(raw):
+            if isinstance(item, str):
+                tasks.append(item)
+            elif isinstance(item, dict):
+                # Fail-closed: every object must carry a present, non-null task field.
+                # Missing or null must not be coerced to "" and filtered (that would allow
+                # partial dispatch of remaining valid entries in a mixed fanout).
+                if "task" not in item:
+                    raise ValueError(
+                        f"fanout item {index}: object must include a non-null 'task' field"
+                    )
+                task_val = item["task"]
+                if task_val is None:
+                    raise ValueError(
+                        f"fanout item {index}: object must include a non-null 'task' field"
+                    )
+                if not isinstance(task_val, (str, int, float, bool)):
+                    raise ValueError(
+                        f"fanout item {index}: 'task' must be a string-like scalar, "
+                        f"got {type(task_val).__name__}"
+                    )
+                tasks.append(str(task_val))
+            else:
+                raise ValueError(
+                    f"fanout item {index} must be a string or object with 'task', "
+                    f"got {type(item).__name__}"
+                )
+    return [t for t in tasks if isinstance(t, str) and t.strip()]
+
+
 def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, dry: bool) -> dict:
     if dry:
         display_cmd = cmd
@@ -304,13 +452,24 @@ def _run_one(cmd: list[str], task: str, run_id: str, label: str, timeout: int, d
 
 
 def cmd_dispatch(args) -> int:
-    tasks = list(args.tasks)
-    if args.fanout:
-        raw = json.loads(Path(args.fanout).read_text())
-        tasks += [t if isinstance(t, str) else str(t.get("task", "")) for t in raw]
-    tasks = [t for t in tasks if t.strip()]
+    # Collect + hard-cap before any config resolve, run dir, dispatch marker, or provider call.
+    try:
+        tasks = _collect_dispatch_tasks(args)
+        limit = max_tasks_per_dispatch()
+    except ValueError as exc:
+        print(f"dispatch refused: {exc}", file=sys.stderr)
+        return 2
     if not tasks:
         print("no tasks given", file=sys.stderr)
+        return 2
+    if len(tasks) > limit:
+        print(
+            f"dispatch refused: task count {len(tasks)} exceeds hard limit of {limit} "
+            f"per invocation (ceiling {MAX_TASKS_HARD_CEILING}; set FRONTIER_MAX_TASKS "
+            f"within 1..{MAX_TASKS_HARD_CEILING} to adjust). "
+            "This is a task-count boundary, not a dollar budget.",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -542,6 +701,8 @@ def cmd_config(args) -> int:
         patch["grok_model"] = args.grok_model
     if args.gemini_model is not None:
         patch["gemini_model"] = args.gemini_model
+    if getattr(args, "openrouter_model", None) is not None:
+        patch["openrouter_model"] = args.openrouter_model
     if args.update_mode is not None:
         patch["update_mode"] = args.update_mode
     executor = args.executor
@@ -841,19 +1002,12 @@ def cmd_doctor(args) -> int:
     if settings_result["status"] == "ready":
         try:
             hooks = _validated_hook_events(settings_result["data"])
-            pre_cmd, stop_cmd = _our_commands()
-
-            def _has_hook(event: str, command: str) -> bool:
-                for entry in hooks.get(event, []):
-                    if not _matcher_covers(event, entry.get("matcher", "")):
-                        continue
-                    for hook in entry.get("hooks", []):
-                        if hook.get("type") == "command" and hook.get("command") == command:
-                            return True
-                return False
-
+            gate_path, verify_path = _our_script_paths()
+            # Doctor marks ready only for current exec-form handlers on covering matchers
+            # (legacy shell-form is not_installed until install-hooks upgrades).
             manual_hooks_installed = (
-                _has_hook("PreToolUse", pre_cmd) and _has_hook("Stop", stop_cmd)
+                _event_has_ready_our_hook(hooks, "PreToolUse", gate_path)
+                and _event_has_ready_our_hook(hooks, "Stop", verify_path)
             )
         except ValueError as exc:
             settings_error = f"Claude settings hook structure is invalid ({exc})"
@@ -1028,20 +1182,197 @@ def _settings_path() -> Path:
     return cfgdir / "settings.json"
 
 
+# Command-hook timeout seconds. Must match hooks/hooks.json and settings.hooks.snippet.json.
+HOOK_COMMAND_TIMEOUT = 10
+
+# Claude Code all-tools PreToolUse matcher. Empty string is equivalent; prefer "*" so
+# registration surfaces (hooks.json, settings snippet, install-hooks) stay visually aligned.
+PRETOOLUSE_ALL_TOOLS_MATCHER = "*"
+
+# Official Claude Code command-hook exec form: command is the executable, args is a string list
+# (no shell). Shell-form "python3 <path>" strings are legacy and are upgraded/removed on install.
+HOOK_COMMAND_EXECUTABLE = "python3"
+
+# Script basenames that identify FrontierFuse command hooks (any registration surface).
+HOOK_SCRIPT_PRETOOL = "frontier_gate.py"
+HOOK_SCRIPT_STOP = "frontier_verify_gate.py"
+_OUR_HOOK_SCRIPTS = frozenset({HOOK_SCRIPT_PRETOOL, HOOK_SCRIPT_STOP})
+_EVENT_SCRIPT = {
+    "PreToolUse": HOOK_SCRIPT_PRETOOL,
+    "Stop": HOOK_SCRIPT_STOP,
+}
+
+
+def _our_script_paths() -> tuple[Path, Path]:
+    """Absolute script paths for Option B / install-hooks (current checkout)."""
+    return (
+        (HERE / "hooks" / HOOK_SCRIPT_PRETOOL).resolve(),
+        (HERE / "hooks" / HOOK_SCRIPT_STOP).resolve(),
+    )
+
+
 def _our_commands() -> tuple[str, str]:
-    return (f"python3 {HERE / 'hooks' / 'frontier_gate.py'}",
-            f"python3 {HERE / 'hooks' / 'frontier_verify_gate.py'}")
+    """Deprecated shell-form strings kept only for tests that still probe legacy helpers.
+
+    Prefer ``_exec_command_hook`` / ``_is_our_hook`` / ``_our_script_paths``. New registration
+    always uses exec form (command + args).
+    """
+    gate, verify = _our_script_paths()
+    return (f"python3 {shlex.quote(str(gate))}", f"python3 {shlex.quote(str(verify))}")
+
+
+def _exec_command_hook(script: Path | str) -> dict:
+    """Build an official exec-form command hook: python3 + one literal script arg + timeout."""
+    return {
+        "type": "command",
+        "command": HOOK_COMMAND_EXECUTABLE,
+        "args": [str(script)],
+        "timeout": HOOK_COMMAND_TIMEOUT,
+    }
+
+
+def _command_hook(command: str) -> dict:
+    """Back-compat shim: shell-form command string → prefer parsing into exec form when possible."""
+    # Install paths no longer use this for new handlers; kept for older test call sites.
+    return {"type": "command", "command": command, "timeout": HOOK_COMMAND_TIMEOUT}
+
+
+def _ensure_command_hook_options(hook: dict) -> None:
+    """Align handler options (timeout) with hooks.json without rewriting unrelated keys."""
+    if hook.get("type") == "command" and hook.get("timeout") != HOOK_COMMAND_TIMEOUT:
+        hook["timeout"] = HOOK_COMMAND_TIMEOUT
+
+
+def _hook_script_name_from_path(path: str) -> str | None:
+    """Return FrontierFuse script basename if ``path`` refers to one of our hook scripts."""
+    if not isinstance(path, str) or not path:
+        return None
+    # Normalize separators; keep the path literal otherwise (spaces/$/`/;/' must survive).
+    normalized = path.replace("\\", "/")
+    base = Path(normalized).name
+    # Strip a trailing quote fragment that can appear in broken shell-form leftovers.
+    base = base.strip("'\"")
+    if base in _OUR_HOOK_SCRIPTS:
+        return base
+    for name in _OUR_HOOK_SCRIPTS:
+        if normalized.endswith(f"/hooks/{name}") or normalized.endswith(f"hooks/{name}"):
+            return name
+        # Placeholder forms: $CLAUDE_PLUGIN_ROOT/hooks/..., <REPO>/hooks/...
+        if f"/hooks/{name}" in normalized or normalized.endswith(name):
+            if name in Path(normalized).name or normalized.rstrip("/").endswith(name):
+                return name
+    return None
+
+
+def _shell_form_script_name(command: str) -> str | None:
+    """Extract our script basename from a legacy shell-form command string, if present.
+
+    Recognizes baseline unquoted, shlex-quoted, and double-quoted path variants, including
+    repo paths that embed spaces, dollar signs, command-substitution text, backticks,
+    semicolons, and apostrophes. Also matches plugin-root shell fragments.
+    """
+    if not isinstance(command, str) or not command.strip():
+        return None
+    text = command.strip()
+    # Must be a python3/python invocation (interpreter may be a path).
+    head = text.split(None, 1)[0]
+    head_name = Path(head).name
+    if head_name not in {"python", "python3"}:
+        return None
+    for name in _OUR_HOOK_SCRIPTS:
+        if name not in text:
+            continue
+        # Prefer shlex when it recovers a single script token.
+        try:
+            tokens = shlex.split(text, posix=True)
+        except ValueError:
+            tokens = None
+        if tokens and len(tokens) >= 2:
+            # python3 <script>  or  python3 -u <script> (we only ship bare form; still match)
+            for tok in tokens[1:]:
+                found = _hook_script_name_from_path(tok)
+                if found == name:
+                    return name
+        # Fallback for unquoted paths with spaces / metacharacters that break shlex:
+        # locate .../hooks/<name> or a trailing <name> after the interpreter.
+        if f"/hooks/{name}" in text or text.rstrip().endswith(name):
+            return name
+        # Plugin-style: python3 "$CLAUDE_PLUGIN_ROOT"/hooks/name
+        if f'CLAUDE_PLUGIN_ROOT"/hooks/{name}' in text or f"CLAUDE_PLUGIN_ROOT'/hooks/{name}" in text:
+            return name
+        if f"CLAUDE_PLUGIN_ROOT/hooks/{name}" in text:
+            return name
+        if f"<REPO>/hooks/{name}" in text or f"<REPO>/hooks/{name}" in text.replace("\\", ""):
+            return name
+    return None
+
+
+def _is_our_hook(hook: dict, script_name: str | None = None) -> bool:
+    """True when a command hook is any FrontierFuse variant (legacy shell or current exec form)."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    names = {script_name} if script_name else set(_OUR_HOOK_SCRIPTS)
+
+    command = hook.get("command")
+    args = hook.get("args", None)
+
+    # Current / target official exec form: command=python3, args=[exactly one script path].
+    if isinstance(args, list):
+        if len(args) == 1 and isinstance(args[0], str):
+            found = _hook_script_name_from_path(args[0])
+            if found in names:
+                # Executable must be python3 (name or path ending in python3/python).
+                if isinstance(command, str) and Path(command).name in {"python", "python3"}:
+                    return True
+                # Malformed executable with our script still counts as "ours" for uninstall/upgrade
+                # so stale/broken entries are cleaned rather than left dangling.
+                if found in names:
+                    return True
+        # Malformed args (wrong arity / non-strings) that still name our script → treat as ours
+        # for cleanup, but doctor will not mark ready.
+        if any(isinstance(a, str) and _hook_script_name_from_path(a) in names for a in args):
+            return True
+        return False
+
+    # Legacy shell form: single command string, no args array.
+    if isinstance(command, str) and args is None:
+        found = _shell_form_script_name(command)
+        return found in names
+    return False
+
+
+def _is_ready_exec_hook(hook: dict, script_path: Path) -> bool:
+    """True when hook is the current exec form bound to this absolute script with aligned timeout."""
+    if not isinstance(hook, dict) or hook.get("type") != "command":
+        return False
+    if hook.get("command") != HOOK_COMMAND_EXECUTABLE:
+        return False
+    args = hook.get("args")
+    if not isinstance(args, list) or len(args) != 1 or not isinstance(args[0], str):
+        return False
+    try:
+        if Path(args[0]).resolve() != script_path.resolve():
+            return False
+    except (OSError, ValueError):
+        if args[0] != str(script_path):
+            return False
+    if hook.get("timeout") != HOOK_COMMAND_TIMEOUT:
+        return False
+    return True
 
 
 def _matcher_covers(event: str, matcher: str) -> bool:
+    """True when the matcher invokes our hook for every tool in the event class.
+
+    Stop: any matcher is unrestricted. PreToolUse: only empty or ``*`` (all-tools
+    semantics) so armed fail-closed policy cannot miss tool classes. A historical
+    Write|Edit|… pipe list is intentionally NOT covering.
+    """
     if not isinstance(matcher, str):
         return False
     if event == "Stop":
         return True
-    if matcher in {"", "*"}:
-        return True
-    required = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}
-    return required.issubset({part.strip() for part in matcher.split("|") if part.strip()})
+    return matcher in {"", "*"}
 
 
 def _redacted_command_detail(command: list[str], present: bool) -> str:
@@ -1069,15 +1400,124 @@ def _validated_hook_events(data: dict) -> dict:
             for hook in entry.get("hooks", []):
                 if not isinstance(hook, dict) or not isinstance(hook.get("type"), str):
                     raise ValueError(f"hooks.{event} contains an invalid hook")
-                if hook.get("type") == "command" and (
-                    not isinstance(hook.get("command"), str) or not hook.get("command")
-                ):
+                if hook.get("type") != "command":
+                    continue
+                command = hook.get("command")
+                if not isinstance(command, str) or not command:
                     raise ValueError(f"hooks.{event} contains an invalid command hook")
+                # Official exec form uses args: list[str]. Malformed args fail closed.
+                if "args" in hook:
+                    args = hook.get("args")
+                    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+                        raise ValueError(f"hooks.{event} contains an invalid command hook args")
     return hooks
 
 
+def _strip_our_hooks_from_event(entries: list, script_name: str) -> int:
+    """Remove every FrontierFuse handler (legacy or current) for ``script_name``.
+
+    Leaves unrelated handlers and empty-matcher structure intact when other hooks remain.
+    Returns the number of removed handlers.
+    """
+    removed = 0
+    keep_entries: list = []
+    for entry in list(entries):
+        if not isinstance(entry, dict):
+            keep_entries.append(entry)
+            continue
+        inner = entry.get("hooks") or []
+        if not isinstance(inner, list):
+            keep_entries.append(entry)
+            continue
+        kept = []
+        for h in inner:
+            if _is_our_hook(h, script_name):
+                removed += 1
+                continue
+            kept.append(h)
+        if kept:
+            entry["hooks"] = kept
+            keep_entries.append(entry)
+        # else: drop empty matcher group entirely
+    entries[:] = keep_entries
+    return removed
+
+
+def _event_has_ready_our_hook(hooks: dict, event: str, script_path: Path) -> bool:
+    script_name = script_path.name
+    for entry in hooks.get(event, []):
+        if not isinstance(entry, dict):
+            continue
+        if not _matcher_covers(event, entry.get("matcher", "")):
+            continue
+        for hook in entry.get("hooks") or []:
+            if _is_ready_exec_hook(hook, script_path):
+                return True
+            # Also accept exec form whose args path matches by basename + same resolved file
+            # when the checkout moved only by symlink.
+            if _is_our_hook(hook, script_name) and isinstance(hook, dict):
+                args = hook.get("args")
+                if (
+                    hook.get("command") == HOOK_COMMAND_EXECUTABLE
+                    and isinstance(args, list)
+                    and len(args) == 1
+                    and isinstance(args[0], str)
+                    and hook.get("timeout") == HOOK_COMMAND_TIMEOUT
+                ):
+                    try:
+                        if Path(args[0]).resolve() == script_path.resolve():
+                            return True
+                    except (OSError, ValueError):
+                        pass
+    return False
+
+
+def _ensure_our_event_handler(hooks: dict, event: str, script_path: Path) -> None:
+    """Upgrade path: strip every prior variant, collapse duplicates, install one exec-form handler."""
+    script_name = _EVENT_SCRIPT[event]
+    entries = hooks.setdefault(event, [])
+    if not isinstance(entries, list):
+        hooks[event] = []
+        entries = hooks[event]
+
+    # Remove all legacy + current own handlers first (including narrow-matcher and duplicates).
+    _strip_our_hooks_from_event(entries, script_name)
+
+    # Prefer reusing an existing all-tools (PreToolUse) / any (Stop) entry when present.
+    target = None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        if event == "PreToolUse":
+            if entry.get("matcher") == PRETOOLUSE_ALL_TOOLS_MATCHER or entry.get("matcher") == "":
+                target = entry
+                break
+        else:
+            # Stop: first covering entry
+            if _matcher_covers("Stop", entry.get("matcher", "")):
+                target = entry
+                break
+
+    desired = _exec_command_hook(script_path)
+    if target is None:
+        matcher = PRETOOLUSE_ALL_TOOLS_MATCHER if event == "PreToolUse" else "*"
+        entries.append({"matcher": matcher, "hooks": [desired]})
+        return
+
+    # Align matcher for PreToolUse to the preferred all-tools token.
+    if event == "PreToolUse" and target.get("matcher") != PRETOOLUSE_ALL_TOOLS_MATCHER:
+        target["matcher"] = PRETOOLUSE_ALL_TOOLS_MATCHER
+    inner = target.setdefault("hooks", [])
+    if not isinstance(inner, list):
+        target["hooks"] = [desired]
+        return
+    # Collapse any residual own handlers and append a single desired exec-form handler.
+    target["hooks"] = [h for h in inner if not _is_our_hook(h, script_name)]
+    target["hooks"].append(desired)
+
+
 def cmd_install_hooks(_args) -> int:
-    pre_cmd, stop_cmd = _our_commands()
+    gate_path, verify_path = _our_script_paths()
     sp = _settings_path()
     sp.parent.mkdir(parents=True, exist_ok=True)
     existing_text = ""
@@ -1105,22 +1545,11 @@ def cmd_install_hooks(_args) -> int:
         return 1
     data.setdefault("hooks", hooks)
 
-    def _has(event: str, command: str) -> bool:
-        for entry in hooks.get(event, []):
-            if not _matcher_covers(event, entry.get("matcher", "")):
-                continue
-            for h in entry.get("hooks", []):
-                if h.get("type") == "command" and h.get("command") == command:
-                    return True
-        return False
-
-    if not _has("PreToolUse", pre_cmd):
-        hooks.setdefault("PreToolUse", []).append(
-            {"matcher": "Write|Edit|MultiEdit|NotebookEdit|Bash",
-             "hooks": [{"type": "command", "command": pre_cmd}]})
-    if not _has("Stop", stop_cmd):
-        hooks.setdefault("Stop", []).append(
-            {"matcher": "*", "hooks": [{"type": "command", "command": stop_cmd}]})
+    # Upgrade / install: strip every prior FrontierFuse variant (shell-form unquoted/quoted,
+    # double-quoted, exec form), collapse duplicates, move PreToolUse to all-tools matcher,
+    # write one official exec-form handler per event with aligned timeout.
+    _ensure_our_event_handler(hooks, "PreToolUse", gate_path)
+    _ensure_our_event_handler(hooks, "Stop", verify_path)
 
     fc.write_text_owner_only(sp, json.dumps(data, indent=2) + "\n")
     print(f"installed FrontierFuse hooks into {sp} (backup: {sp.with_suffix('.json.bak')}).")
@@ -1129,7 +1558,6 @@ def cmd_install_hooks(_args) -> int:
 
 
 def cmd_uninstall_hooks(_args) -> int:
-    pre_cmd, stop_cmd = _our_commands()
     sp = _settings_path()
     if not sp.exists():
         print("no settings.json — nothing to remove.")
@@ -1149,16 +1577,13 @@ def cmd_uninstall_hooks(_args) -> int:
         print(f"REFUSING to modify malformed Claude hook settings {sp}: {exc}", file=sys.stderr)
         return 1
     removed = 0
-    for event in ("PreToolUse", "Stop"):
-        keep = []
-        for entry in hooks.get(event, []):
-            inner = [h for h in entry.get("hooks", []) if h.get("command") not in (pre_cmd, stop_cmd)]
-            removed += len(entry.get("hooks", [])) - len(inner)
-            if inner:
-                entry["hooks"] = inner
-                keep.append(entry)
-        if keep:
-            hooks[event] = keep
+    for event, script_name in _EVENT_SCRIPT.items():
+        entries = hooks.get(event, [])
+        if not isinstance(entries, list):
+            continue
+        removed += _strip_our_hooks_from_event(entries, script_name)
+        if entries:
+            hooks[event] = entries
         else:
             hooks.pop(event, None)
     fc.write_text_owner_only(sp, json.dumps(data, indent=2) + "\n")
@@ -1171,11 +1596,31 @@ def cmd_uninstall_hooks(_args) -> int:
 # --------------------------------------------------------------------------- #
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="frontier-dispatch", description="FrontierFuse orchestrator body-caller")
-    ap.add_argument("tasks", nargs="*", help="task string(s) to dispatch to selected bodies")
+    ap.add_argument(
+        "tasks",
+        nargs="*",
+        help=(
+            "task string(s) to dispatch to selected bodies; combined non-empty count with "
+            f"--fanout is hard-capped at {DEFAULT_MAX_TASKS_PER_DISPATCH} "
+            f"(FRONTIER_MAX_TASKS, ceiling {MAX_TASKS_HARD_CEILING})"
+        ),
+    )
     ap.add_argument("--parallel", "-p", action="store_true", help="fan out tasks concurrently")
-    ap.add_argument("--fanout", default="", help="JSON file of tasks (strings or {task:...})")
+    ap.add_argument(
+        "--fanout",
+        default="",
+        help=(
+            "JSON list of tasks (strings or {task:...}); same hard task-count cap as positional "
+            f"tasks ({DEFAULT_MAX_TASKS_PER_DISPATCH}, ceiling {MAX_TASKS_HARD_CEILING})"
+        ),
+    )
     ap.add_argument("--dry-run", action="store_true", help="build the command; make no engine call")
-    ap.add_argument("--budget-usd", type=float, default=0.0, help="informational soft budget note")
+    ap.add_argument(
+        "--budget-usd",
+        type=float,
+        default=0.0,
+        help="informational soft budget note only (not enforced; task-count hard cap is separate)",
+    )
     ap.add_argument("--timeout", type=int, default=BODY_TIMEOUT, help="per-body timeout seconds")
     ap.add_argument("--model", default=None, help="selected executor model; empty uses provider default [legacy]")
     ap.add_argument("--executor-model", default=None,
@@ -1201,6 +1646,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--claude-model", dest="claude_model", default=None)
     ap.add_argument("--grok-model", dest="grok_model", default=None)
     ap.add_argument("--gemini-model", dest="gemini_model", default=None)
+    ap.add_argument("--openrouter-model", dest="openrouter_model", default=None,
+                    help="model when executor/frontier provider is openrouter")
     ap.add_argument("--provider", choices=sorted(fc.KNOWN_EXECUTORS), default=None,
                     help="models: filter model catalog by provider")
     ap.add_argument("--no-discover", action="store_true",
@@ -1219,20 +1666,243 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--passive", action="store_true",
                     help="update: honor passive mode and stay silent when current")
     ap.add_argument("--json", action="store_true", help="print machine-readable status when supported")
+    # topology / role / consult
+    ap.add_argument("--name", dest="role_name", default=None, help="role: name to set/clear")
+    ap.add_argument("--kind", dest="role_kind", choices=["consult", "body"], default=None,
+                    help="role set: consult or body")
+    ap.add_argument("--role-provider", dest="role_provider",
+                    choices=sorted(fc.KNOWN_EXECUTORS), default=None,
+                    help="role set: provider backend")
+    ap.add_argument("--role-model", dest="role_model", default=None, help="role set: model ID")
+    ap.add_argument("--role-effort", dest="role_effort",
+                    choices=["low", "medium", "high", "xhigh"], default=None,
+                    help="role set: effort")
+    ap.add_argument("--role", dest="consult_role", default="frontier",
+                    help="consult: role name (default frontier)")
+    ap.add_argument("--question", dest="consult_question", default=None,
+                    help="consult: question text")
+    ap.add_argument("--context", default=None, help="consult: optional context")
     return ap
+
+
+
+def cmd_topology(args) -> int:
+    """Print effective multi-role topology. Pure; never calls providers."""
+    import frontier_topology as ft
+    try:
+        cfg = fc.resolve_config(session_id=SESSION_ID)
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"topology refused: {exc}", file=sys.stderr)
+        return 2
+    topo = ft.project_topology(cfg)
+    if getattr(args, "json", False):
+        print(json.dumps(topo, indent=2, sort_keys=True))
+        return 0
+    print(f"profile: {topo['profile']}")
+    print(f"host: {topo['host']['note']}")
+    print("native slots:")
+    for slot, info in topo["native_slots"].items():
+        print(f"  {slot}: {info['provider']} / {info['model']}")
+    print("roles:")
+    for name, binding in topo["roles"].items():
+        effort = f" @{binding['effort']}" if binding.get("effort") else ""
+        print(
+            f"  {name}: {binding.get('kind')} "
+            f"{binding.get('provider')} / {binding.get('model')}{effort} "
+            f"[{binding.get('source')}]"
+        )
+    print("provider crossings (context may leave the machine):")
+    for c in topo["provider_crossings"]:
+        print(f"  - {c['role']} -> {c['provider']} ({c['kind']})")
+    print("recipes: " + ", ".join(topo["recipes"].keys()))
+    return 0
+
+
+def cmd_role(args) -> int:
+    """List or bind named roles into session/global config."""
+    import frontier_topology as ft
+    action = getattr(args, "role_action", None) or "list"
+    try:
+        if action == "list":
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = (cfg.get("roles") or {})
+            builtins = ft.builtin_roles(cfg)
+            payload = {"builtin": builtins, "custom": roles}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print("builtin:")
+                for n, b in builtins.items():
+                    print(f"  {n}: {b}")
+                print("custom:")
+                if not roles:
+                    print("  (none)")
+                for n, b in sorted(roles.items()):
+                    print(f"  {n}: {b}")
+            return 0
+        if action == "clear":
+            name = getattr(args, "role_name", None)
+            if not name:
+                print("role clear requires --name", file=sys.stderr)
+                return 2
+            name = ft.validate_role_name(name)
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = dict(cfg.get("roles") or {})
+            if name not in roles:
+                print(f"role clear: {name!r} not in custom roles (nothing to do)")
+                return 0
+            del roles[name]
+            fc.update_config_transaction(
+                SESSION_ID, {"roles": roles}, global_scope=bool(getattr(args, "glob", False))
+            )
+            print(f"cleared custom role {name!r}")
+            return 0
+        if action == "set":
+            name = getattr(args, "role_name", None)
+            kind = getattr(args, "role_kind", None)
+            provider = getattr(args, "role_provider", None)
+            model = getattr(args, "role_model", None) or ""
+            effort = getattr(args, "role_effort", None)
+            if not name or not kind or not provider:
+                print(
+                    "role set requires --name, --kind consult|body, --provider, and optional --model/--effort",
+                    file=sys.stderr,
+                )
+                return 2
+            name = ft.validate_role_name(name)
+            binding = {"kind": kind, "provider": provider, "model": model}
+            if effort:
+                binding["effort"] = effort
+            binding = ft.validate_role_binding(binding, source=f"role.set.{name}")
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = dict(cfg.get("roles") or {})
+            roles[name] = binding
+            # validate full map
+            roles = ft.validate_roles(roles, source="roles")
+            fc.update_config_transaction(
+                SESSION_ID, {"roles": roles}, global_scope=bool(getattr(args, "glob", False))
+            )
+            print(json.dumps({"ok": True, "name": name, "binding": binding}, indent=2))
+            return 0
+        print(f"role refused: unknown action {action!r}", file=sys.stderr)
+        return 2
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"role refused: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_consult(args) -> int:
+    """Consult a named role (or the frontier slot). Supports --dry-run."""
+    import frontier_topology as ft
+    question = getattr(args, "consult_question", None) or ""
+    if not str(question).strip() and not getattr(args, "dry_run", False):
+        # allow remaining positional from tasks? use role_question arg
+        pass
+    role = getattr(args, "consult_role", None) or "frontier"
+    question = getattr(args, "consult_question", None)
+    if question is None:
+        # fall back to first task-like arg if present
+        tasks = getattr(args, "tasks", None) or []
+        question = tasks[0] if tasks else ""
+    try:
+        cfg = fc.resolve_config(session_id=SESSION_ID)
+        cfg = ft.cfg_for_role_consult(cfg, role)
+        cmd = fc.build_frontier_command(cfg)
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"consult refused: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "dry_run", False):
+        print(json.dumps({
+            "ok": True,
+            "dry_run": True,
+            "role": role,
+            "provider": cfg.get("frontier_provider"),
+            "model": fc.effective_frontier_model(cfg),
+            "command": cmd,
+            "context_leaves_machine": True,
+        }, indent=2))
+        return 0
+    if not str(question).strip():
+        print("consult refused: question required (unless --dry-run)", file=sys.stderr)
+        return 2
+    # Build a one-shot consult using the role-mapped frontier command.
+    prompt = str(question)
+    ctx = getattr(args, "context", None)
+    if ctx:
+        prompt = f"Context:\n{ctx}\n\nQuestion:\n{question}"
+    note = (
+        f"Consulting role {role!r} via provider {cfg.get('frontier_provider')} "
+        f"(context leaves this machine)."
+    )
+    print(note, file=sys.stderr)
+    try:
+        # Prefer prompt-file transport when command expects it.
+        cmd_tokens = list(cmd)
+        if "{prompt_file}" in cmd_tokens:
+            # run_engine-style: write owner-only prompt file
+            import tempfile
+            from pathlib import Path
+            runs = Path(tempfile.mkdtemp(prefix="frontier-consult-"))
+            try:
+                pf = runs / "prompt.txt"
+                fc.write_text_owner_only(pf, prompt)
+                cmd_tokens = [pf.as_posix() if t == "{prompt_file}" else t for t in cmd_tokens]
+                # OpenRouter dry helper not used for live; execute argv.
+                proc = subprocess.run(cmd_tokens, capture_output=True, text=True,
+                                      timeout=float(getattr(args, "timeout", None) or 180))
+                out = (proc.stdout or "").strip()
+                err = (proc.stderr or "").strip()
+                if proc.returncode != 0:
+                    print(err or out or f"consult failed rc={proc.returncode}", file=sys.stderr)
+                    return proc.returncode or 1
+                print(out)
+                return 0
+            finally:
+                import shutil
+                shutil.rmtree(runs, ignore_errors=True)
+        # stdin providers (codex) / claude -p
+        proc = subprocess.run(
+            cmd_tokens,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=float(getattr(args, "timeout", None) or 180),
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            print(err or out or f"consult failed rc={proc.returncode}", file=sys.stderr)
+            return proc.returncode or 1
+        print(out)
+        return 0
+    except subprocess.TimeoutExpired:
+        print("consult refused: timeout", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"consult refused: {exc}", file=sys.stderr)
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     sub = argv[0] if argv and argv[0] in SUBCOMMANDS else "dispatch"
     rest = argv[1:] if (argv and argv[0] in SUBCOMMANDS) else argv
+    role_action = None
+    if sub == "role" and rest and rest[0] in {"list", "set", "clear"}:
+        role_action = rest[0]
+        rest = rest[1:]
     args = _build_parser().parse_args(rest)
+    if role_action is not None:
+        args.role_action = role_action
+    elif sub == "role":
+        args.role_action = "list"
 
     handlers = {
         "dispatch": cmd_dispatch, "arm": cmd_arm, "disarm": cmd_disarm, "done": cmd_done,
         "verify": cmd_verify, "config": cmd_config, "models": cmd_models,
         "doctor": cmd_doctor, "update": cmd_update,
         "install-hooks": cmd_install_hooks, "uninstall-hooks": cmd_uninstall_hooks,
+        "topology": cmd_topology, "role": cmd_role, "consult": cmd_consult,
     }
     try:
         return handlers[sub](args)

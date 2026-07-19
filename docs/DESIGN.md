@@ -1,7 +1,7 @@
-# FrontierFuse Architecture (0.3.6)
+# FrontierFuse Architecture (0.3.7)
 
 This document describes the shipped Claude Code plugin and shared checkout surface. The roadmap is
-in `docs/FRONTIERFUSE_EXECUTION_PLAN.md`. Baseline **0.3.6** includes provider-neutral roles, offline
+in `docs/FRONTIERFUSE_EXECUTION_PLAN.md`. Baseline **0.3.7** includes provider-neutral roles, offline
 doctor, quiet updates, reliable configuration, Gemini executor support, provider-aware model
 discovery, and `--executor-model` as the primary executor pin (with `--model` as legacy alias).
 
@@ -12,9 +12,9 @@ FrontierFuse separates profile, frontier, and executor as independent decisions:
 | Decision | Values | Default |
 |-|-|-|
 | Profile | `advisor`, `orchestrator` | `advisor` |
-| Frontier provider | `codex`, `claude`, `grok`, `gemini` | `claude` |
+| Frontier provider | `codex`, `claude`, `grok`, `gemini`, `openrouter` | `claude` |
 | Frontier model | provider model ID | `claude-fable-5` |
-| Executor provider | `codex`, `claude`, `grok`, `gemini` | `codex` |
+| Executor provider | `codex`, `claude`, `grok`, `gemini`, `openrouter` | `codex` |
 | Executor model | provider model ID | Codex account default (empty pin) |
 | Effort | Codex/Grok: `low`/`medium`/`high` (+ Codex `xhigh`) | provider default / high lane |
 | Update mode | `passive`, `manual`, `off` | `passive` |
@@ -242,3 +242,19 @@ python3 scripts/public-release-scrub.py --all-history
 
 Tests are keyless and offline. Runtime behavior is covered with dry-runs, synthetic hook payloads,
 temporary Git repositories, and dummy command overrides.
+
+## Multi-role topology (0.3.7+)
+
+FrontierFuse still has two native durable slots (`frontier` consult + `executor` body). Optional
+named `roles` bindings add extra consult/body labels (for example `orchestration_consult` =
+Codex `gpt-5.6-sol` @ `xhigh`) without claiming a host-model swap. Inspect with:
+
+```bash
+frontier-dispatch topology --json
+frontier-dispatch role set --name orchestration_consult --kind consult \
+  --role-provider codex --role-model gpt-5.6-sol --role-effort xhigh
+frontier-dispatch consult --role orchestration_consult --dry-run --question "plan this"
+```
+
+OpenRouter is a fifth provider backend. Live calls require `OPENROUTER_API_KEY`. Default doctor
+remains offline; key presence is not entitlement proof.

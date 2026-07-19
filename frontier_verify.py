@@ -389,38 +389,58 @@ def _write_owner_only(path: Path, text: str) -> None:
 
 
 def _run_gate_argv(argv: list[str], cwd: str) -> tuple[int, str, str]:
+    """Run an argv gate with shared byte-capped capture + descendant containment."""
     try:
-        proc = subprocess.run(
+        max_bytes = fc.gate_capture_max_bytes()
+    except ValueError as exc:
+        return 2, "", f"invalid gate capture limit: {exc}"
+    try:
+        rc, stdout, stderr = fc.run_bounded_subprocess(
             argv,
-            shell=False,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
             timeout=GATE_TIMEOUT,
+            cwd=cwd,
+            shell=False,
+            max_stdout_bytes=max_bytes,
+            max_stderr_bytes=max_bytes,
+            start_new_session=True,
         )
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        return rc, stdout or "", stderr or ""
     except FileNotFoundError:
         return 127, "", f"gate executable not found: {argv[0]!r}"
     except subprocess.TimeoutExpired:
         return 124, "", f"gate timed out after {GATE_TIMEOUT}s"
+    except fc.ContainmentError as exc:
+        # Fail closed: never present a successful gate when descendants may survive.
+        return 125, "", f"gate containment failed: {exc}"
     except OSError as exc:
         return 127, "", f"gate exec failed: {exc}"
 
 
 def _run_gate_legacy_shell(gate: str, cwd: str) -> tuple[int, str, str]:
-    """Explicitly named unsafe compatibility path (shell=True)."""
+    """Explicitly named unsafe compatibility path (shell=True).
+
+    Still uses the shared bounded capture primitive so stdout/stderr cannot grow
+    without limit and timeout kills the process group.
+    """
     try:
-        proc = subprocess.run(
+        max_bytes = fc.gate_capture_max_bytes()
+    except ValueError as exc:
+        return 2, "", f"invalid gate capture limit: {exc}"
+    try:
+        rc, stdout, stderr = fc.run_bounded_subprocess(
             gate,
-            shell=True,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
             timeout=GATE_TIMEOUT,
+            cwd=cwd,
+            shell=True,
+            max_stdout_bytes=max_bytes,
+            max_stderr_bytes=max_bytes,
+            start_new_session=True,
         )
-        return proc.returncode, proc.stdout or "", proc.stderr or ""
+        return rc, stdout or "", stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "", f"gate timed out after {GATE_TIMEOUT}s"
+    except fc.ContainmentError as exc:
+        return 125, "", f"gate containment failed: {exc}"
     except OSError as exc:
         return 127, "", f"gate shell exec failed: {exc}"
 

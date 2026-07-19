@@ -17,7 +17,7 @@ import frontier_models as models  # noqa: E402
 
 
 def test_catalog_has_all_supported_providers() -> None:
-    assert models.PROVIDERS == {"codex", "claude", "grok", "gemini"}
+    assert models.PROVIDERS == {"codex", "claude", "grok", "gemini", "openrouter"}
     for provider in models.PROVIDERS:
         assert models.SOURCES[provider]
         assert models.models_for(provider, discover=False)

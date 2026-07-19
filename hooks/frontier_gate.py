@@ -24,6 +24,24 @@ import frontier_common as fc
 
 BLOCK_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# Narrow explicit allowlist of read-only / inspection tools the controller may use while armed.
+# Names match official Claude Code tools (https://code.claude.com/docs/en/tools). Everything else
+# fails closed (workflow guardrail, not a sandbox — host can kill-switch/disarm).
+# Do NOT allow broad dynamic MCP tool prefixes (mcp__server__*); those tools may mutate. Only the
+# dedicated MCP resource list/read tools are permitted. Obsolete names (LS, TodoRead,
+# ListMcpResources, ReadMcpResource) are intentionally omitted — not present in current docs.
+ALLOW_READONLY_TOOLS = frozenset({
+    "Read",
+    "Grep",
+    "Glob",
+    "WebSearch",
+    "WebFetch",
+    "LSP",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool",
+    "ToolSearch",
+})
+
 # Shell metacharacters that would let an allowlisted command chain into an arbitrary one
 # (e.g. "git status && rm -rf /"). Bash tool calls run the full string through a shell, so
 # argv validation alone is not enough — reject anything that isn't a single simple command.
@@ -528,7 +546,10 @@ def main() -> None:
         if bash_command_allowed(cmd, state.get("approved_gate")):
             _allow()
         _deny(f"Bash blocked: {cmd[:60]!r}. {MSG}")
-    _allow()  # Read / Grep / Glob / Task / MCP reads / etc. — the brain may inspect freely
+    if tool in ALLOW_READONLY_TOOLS:
+        _allow()
+    # Armed fail-closed: mutating / unknown tool classes not on the narrow allowlist are denied.
+    _deny(f"{tool or '(missing tool)'} blocked. {MSG}")
 
 
 if __name__ == "__main__":

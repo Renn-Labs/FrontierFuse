@@ -273,3 +273,12 @@ After MCP or hook install/update, reload/restart the host harness so the new sur
 Configuration precedence: per-call flag > session config >
 `~/.config/frontier-fuse/config.json` > environment > built-in defaults. Changes apply to the next
 managed call. Re-verify after changing configuration in an armed loop.
+
+
+## Multi-role + OpenRouter (0.3.7)
+
+- `frontier-dispatch topology [--json]` — pure projection of host, native slots, named roles, crossings.
+- `frontier-dispatch role set|list|clear` — bind extra consult/body roles (e.g. Sol orchestration).
+- `frontier-dispatch consult --role NAME` — consult a named role; `--dry-run` builds command only.
+- Provider `openrouter` requires `OPENROUTER_API_KEY` for live calls; never invent model IDs.
+- Do not claim the plugin swaps the host model. Verifier is not a model role.
