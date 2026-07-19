@@ -127,7 +127,7 @@ def test_readme_install_lifecycle_paths() -> None:
         "intentionally has no `--` separator",
         "last-known-good",
         "git pull --ff-only",
-        "0.3.6",
+        "0.3.7",
     ):
         assert needle in readme, f"README.md missing install/lifecycle needle {needle!r}"
 
@@ -186,10 +186,10 @@ def test_no_stale_active_0_3_2_baseline() -> None:
     design = _read(ROOT / "docs" / "DESIGN.md")
     readme = _read(ROOT / "README.md")
     assert "Architecture (0.3.2)" not in design
-    assert "Architecture (0.3.6)" in design or "0.3.6" in design
+    assert "Architecture (0.3.7)" in design or "0.3.7" in design
     assert "active build is `0.3.2`" not in plan
-    assert "0.3.6" in plan and "Shipped baseline" in plan
-    assert "0.3.6" in readme
+    assert "0.3.7" in plan and "Shipped baseline" in plan
+    assert "0.3.7" in readme
     # Historical delivered section may still name 0.3.2 as a past release.
     assert "Release 0.3.2" in plan or "0.3.2" in plan
 

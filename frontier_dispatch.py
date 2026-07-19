@@ -40,6 +40,7 @@ import shlex
 import shutil
 import stat
 import sys
+import subprocess
 import time
 from pathlib import Path
 
@@ -59,13 +60,14 @@ DEFAULT_MAX_TASKS_PER_DISPATCH = 32
 # Conservative bound for --fanout file contents (fail-closed before JSON parse).
 MAX_FANOUT_FILE_BYTES = 1 * 1024 * 1024
 SUBCOMMANDS = {"dispatch", "arm", "disarm", "done", "verify", "config", "models", "doctor", "update",
-               "install-hooks", "uninstall-hooks"}
+               "install-hooks", "uninstall-hooks", "topology", "role", "consult"}
 
 _EXECUTOR_MODEL_KEYS = {
     "codex": "codex_model",
     "claude": "claude_model",
     "grok": "grok_model",
     "gemini": "gemini_model",
+    "openrouter": "openrouter_model",
 }
 # Provider-specific model CLI flags that must not be combined with --executor-model/--model
 # for the selected executor (Codex has no separate provider model flag).
@@ -79,6 +81,8 @@ _PROVIDER_CLI_NAMES = {
     "claude": "claude",
     "grok": "grok",
     "gemini": "gemini",
+    # OpenRouter is HTTP (no PATH CLI). Doctor treats key presence separately.
+    "openrouter": "openrouter",
 }
 # Doctor JSON statement: PATH presence is not auth or entitlement.
 AVAILABILITY_NOTE = (
@@ -110,6 +114,8 @@ def _default_frontier_model_for(provider: str) -> str:
         return "grok-4.5"
     if provider == "gemini":
         return "gemini-3.5-flash"
+    if provider == "openrouter":
+        return "openrouter/auto"
     return ""
 
 
@@ -141,7 +147,11 @@ def suggest_provider_availability(
     present = {
         provider: bool(which(cli_name))
         for provider, cli_name in _PROVIDER_CLI_NAMES.items()
+        if provider != "openrouter"
     }
+    # OpenRouter is HTTP; "present" means a key is configured (not entitlement proof).
+    import os as _os
+    present["openrouter"] = bool((_os.environ.get("OPENROUTER_API_KEY") or "").strip())
     present_list = sorted(provider for provider, ok in present.items() if ok)
 
     executor = str(cfg.get("executor") or "codex").lower()
@@ -691,6 +701,8 @@ def cmd_config(args) -> int:
         patch["grok_model"] = args.grok_model
     if args.gemini_model is not None:
         patch["gemini_model"] = args.gemini_model
+    if getattr(args, "openrouter_model", None) is not None:
+        patch["openrouter_model"] = args.openrouter_model
     if args.update_mode is not None:
         patch["update_mode"] = args.update_mode
     executor = args.executor
@@ -1634,6 +1646,8 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--claude-model", dest="claude_model", default=None)
     ap.add_argument("--grok-model", dest="grok_model", default=None)
     ap.add_argument("--gemini-model", dest="gemini_model", default=None)
+    ap.add_argument("--openrouter-model", dest="openrouter_model", default=None,
+                    help="model when executor/frontier provider is openrouter")
     ap.add_argument("--provider", choices=sorted(fc.KNOWN_EXECUTORS), default=None,
                     help="models: filter model catalog by provider")
     ap.add_argument("--no-discover", action="store_true",
@@ -1652,20 +1666,243 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--passive", action="store_true",
                     help="update: honor passive mode and stay silent when current")
     ap.add_argument("--json", action="store_true", help="print machine-readable status when supported")
+    # topology / role / consult
+    ap.add_argument("--name", dest="role_name", default=None, help="role: name to set/clear")
+    ap.add_argument("--kind", dest="role_kind", choices=["consult", "body"], default=None,
+                    help="role set: consult or body")
+    ap.add_argument("--role-provider", dest="role_provider",
+                    choices=sorted(fc.KNOWN_EXECUTORS), default=None,
+                    help="role set: provider backend")
+    ap.add_argument("--role-model", dest="role_model", default=None, help="role set: model ID")
+    ap.add_argument("--role-effort", dest="role_effort",
+                    choices=["low", "medium", "high", "xhigh"], default=None,
+                    help="role set: effort")
+    ap.add_argument("--role", dest="consult_role", default="frontier",
+                    help="consult: role name (default frontier)")
+    ap.add_argument("--question", dest="consult_question", default=None,
+                    help="consult: question text")
+    ap.add_argument("--context", default=None, help="consult: optional context")
     return ap
+
+
+
+def cmd_topology(args) -> int:
+    """Print effective multi-role topology. Pure; never calls providers."""
+    import frontier_topology as ft
+    try:
+        cfg = fc.resolve_config(session_id=SESSION_ID)
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"topology refused: {exc}", file=sys.stderr)
+        return 2
+    topo = ft.project_topology(cfg)
+    if getattr(args, "json", False):
+        print(json.dumps(topo, indent=2, sort_keys=True))
+        return 0
+    print(f"profile: {topo['profile']}")
+    print(f"host: {topo['host']['note']}")
+    print("native slots:")
+    for slot, info in topo["native_slots"].items():
+        print(f"  {slot}: {info['provider']} / {info['model']}")
+    print("roles:")
+    for name, binding in topo["roles"].items():
+        effort = f" @{binding['effort']}" if binding.get("effort") else ""
+        print(
+            f"  {name}: {binding.get('kind')} "
+            f"{binding.get('provider')} / {binding.get('model')}{effort} "
+            f"[{binding.get('source')}]"
+        )
+    print("provider crossings (context may leave the machine):")
+    for c in topo["provider_crossings"]:
+        print(f"  - {c['role']} -> {c['provider']} ({c['kind']})")
+    print("recipes: " + ", ".join(topo["recipes"].keys()))
+    return 0
+
+
+def cmd_role(args) -> int:
+    """List or bind named roles into session/global config."""
+    import frontier_topology as ft
+    action = getattr(args, "role_action", None) or "list"
+    try:
+        if action == "list":
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = (cfg.get("roles") or {})
+            builtins = ft.builtin_roles(cfg)
+            payload = {"builtin": builtins, "custom": roles}
+            if getattr(args, "json", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print("builtin:")
+                for n, b in builtins.items():
+                    print(f"  {n}: {b}")
+                print("custom:")
+                if not roles:
+                    print("  (none)")
+                for n, b in sorted(roles.items()):
+                    print(f"  {n}: {b}")
+            return 0
+        if action == "clear":
+            name = getattr(args, "role_name", None)
+            if not name:
+                print("role clear requires --name", file=sys.stderr)
+                return 2
+            name = ft.validate_role_name(name)
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = dict(cfg.get("roles") or {})
+            if name not in roles:
+                print(f"role clear: {name!r} not in custom roles (nothing to do)")
+                return 0
+            del roles[name]
+            fc.update_config_transaction(
+                SESSION_ID, {"roles": roles}, global_scope=bool(getattr(args, "glob", False))
+            )
+            print(f"cleared custom role {name!r}")
+            return 0
+        if action == "set":
+            name = getattr(args, "role_name", None)
+            kind = getattr(args, "role_kind", None)
+            provider = getattr(args, "role_provider", None)
+            model = getattr(args, "role_model", None) or ""
+            effort = getattr(args, "role_effort", None)
+            if not name or not kind or not provider:
+                print(
+                    "role set requires --name, --kind consult|body, --provider, and optional --model/--effort",
+                    file=sys.stderr,
+                )
+                return 2
+            name = ft.validate_role_name(name)
+            binding = {"kind": kind, "provider": provider, "model": model}
+            if effort:
+                binding["effort"] = effort
+            binding = ft.validate_role_binding(binding, source=f"role.set.{name}")
+            cfg = fc.resolve_config(session_id=SESSION_ID)
+            roles = dict(cfg.get("roles") or {})
+            roles[name] = binding
+            # validate full map
+            roles = ft.validate_roles(roles, source="roles")
+            fc.update_config_transaction(
+                SESSION_ID, {"roles": roles}, global_scope=bool(getattr(args, "glob", False))
+            )
+            print(json.dumps({"ok": True, "name": name, "binding": binding}, indent=2))
+            return 0
+        print(f"role refused: unknown action {action!r}", file=sys.stderr)
+        return 2
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"role refused: {exc}", file=sys.stderr)
+        return 2
+
+
+def cmd_consult(args) -> int:
+    """Consult a named role (or the frontier slot). Supports --dry-run."""
+    import frontier_topology as ft
+    question = getattr(args, "consult_question", None) or ""
+    if not str(question).strip() and not getattr(args, "dry_run", False):
+        # allow remaining positional from tasks? use role_question arg
+        pass
+    role = getattr(args, "consult_role", None) or "frontier"
+    question = getattr(args, "consult_question", None)
+    if question is None:
+        # fall back to first task-like arg if present
+        tasks = getattr(args, "tasks", None) or []
+        question = tasks[0] if tasks else ""
+    try:
+        cfg = fc.resolve_config(session_id=SESSION_ID)
+        cfg = ft.cfg_for_role_consult(cfg, role)
+        cmd = fc.build_frontier_command(cfg)
+    except (ValueError, fc.ConfigFileError, fc.StateFileError) as exc:
+        print(f"consult refused: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "dry_run", False):
+        print(json.dumps({
+            "ok": True,
+            "dry_run": True,
+            "role": role,
+            "provider": cfg.get("frontier_provider"),
+            "model": fc.effective_frontier_model(cfg),
+            "command": cmd,
+            "context_leaves_machine": True,
+        }, indent=2))
+        return 0
+    if not str(question).strip():
+        print("consult refused: question required (unless --dry-run)", file=sys.stderr)
+        return 2
+    # Build a one-shot consult using the role-mapped frontier command.
+    prompt = str(question)
+    ctx = getattr(args, "context", None)
+    if ctx:
+        prompt = f"Context:\n{ctx}\n\nQuestion:\n{question}"
+    note = (
+        f"Consulting role {role!r} via provider {cfg.get('frontier_provider')} "
+        f"(context leaves this machine)."
+    )
+    print(note, file=sys.stderr)
+    try:
+        # Prefer prompt-file transport when command expects it.
+        cmd_tokens = list(cmd)
+        if "{prompt_file}" in cmd_tokens:
+            # run_engine-style: write owner-only prompt file
+            import tempfile
+            from pathlib import Path
+            runs = Path(tempfile.mkdtemp(prefix="frontier-consult-"))
+            try:
+                pf = runs / "prompt.txt"
+                fc.write_text_owner_only(pf, prompt)
+                cmd_tokens = [pf.as_posix() if t == "{prompt_file}" else t for t in cmd_tokens]
+                # OpenRouter dry helper not used for live; execute argv.
+                proc = subprocess.run(cmd_tokens, capture_output=True, text=True,
+                                      timeout=float(getattr(args, "timeout", None) or 180))
+                out = (proc.stdout or "").strip()
+                err = (proc.stderr or "").strip()
+                if proc.returncode != 0:
+                    print(err or out or f"consult failed rc={proc.returncode}", file=sys.stderr)
+                    return proc.returncode or 1
+                print(out)
+                return 0
+            finally:
+                import shutil
+                shutil.rmtree(runs, ignore_errors=True)
+        # stdin providers (codex) / claude -p
+        proc = subprocess.run(
+            cmd_tokens,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=float(getattr(args, "timeout", None) or 180),
+        )
+        out = (proc.stdout or "").strip()
+        err = (proc.stderr or "").strip()
+        if proc.returncode != 0:
+            print(err or out or f"consult failed rc={proc.returncode}", file=sys.stderr)
+            return proc.returncode or 1
+        print(out)
+        return 0
+    except subprocess.TimeoutExpired:
+        print("consult refused: timeout", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"consult refused: {exc}", file=sys.stderr)
+        return 2
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     sub = argv[0] if argv and argv[0] in SUBCOMMANDS else "dispatch"
     rest = argv[1:] if (argv and argv[0] in SUBCOMMANDS) else argv
+    role_action = None
+    if sub == "role" and rest and rest[0] in {"list", "set", "clear"}:
+        role_action = rest[0]
+        rest = rest[1:]
     args = _build_parser().parse_args(rest)
+    if role_action is not None:
+        args.role_action = role_action
+    elif sub == "role":
+        args.role_action = "list"
 
     handlers = {
         "dispatch": cmd_dispatch, "arm": cmd_arm, "disarm": cmd_disarm, "done": cmd_done,
         "verify": cmd_verify, "config": cmd_config, "models": cmd_models,
         "doctor": cmd_doctor, "update": cmd_update,
         "install-hooks": cmd_install_hooks, "uninstall-hooks": cmd_uninstall_hooks,
+        "topology": cmd_topology, "role": cmd_role, "consult": cmd_consult,
     }
     try:
         return handlers[sub](args)

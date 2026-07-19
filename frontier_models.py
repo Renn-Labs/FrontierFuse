@@ -11,6 +11,7 @@ SOURCES = {
     "claude": "https://platform.claude.com/docs/en/about-claude/models/overview",
     "grok": "local `grok models` plus official xAI/Grok Build availability",
     "gemini": "https://ai.google.dev/gemini-api/docs/models",
+    "openrouter": "https://openrouter.ai/docs ; requires OPENROUTER_API_KEY for live calls",
 }
 
 # Curated for coding-agent use, not an exhaustive provider inventory.
@@ -48,6 +49,14 @@ CATALOG = {
         ("gemini-2.5-pro", "previous complex reasoning model", "previous"),
         ("gemini-2.5-flash", "previous price/performance model", "previous"),
         ("gemini-2.5-flash-lite", "previous low-cost model", "previous"),
+    ],
+    "openrouter": [
+        ("openrouter/auto", "OpenRouter auto router", "recommended"),
+        ("anthropic/claude-sonnet-4", "Claude via OpenRouter", "current"),
+        ("openai/gpt-5", "GPT via OpenRouter", "current"),
+        ("google/gemini-2.5-flash", "Gemini via OpenRouter", "current"),
+        ("x-ai/grok-3", "Grok via OpenRouter", "current"),
+        ("meta-llama/llama-4-maverick", "Llama via OpenRouter", "current"),
     ],
 }
 

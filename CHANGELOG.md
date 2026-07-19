@@ -8,6 +8,32 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.7] - 2026-07-19
+
+### Added
+- Subreaper-per-run descendant containment with sealed parent↔supervisor pipe receipts (HMAC-bound
+  to supervisor pid/starttime). Forged or truthy containment receipts cannot produce GREEN.
+- Timeout paths require verified containment cleanup before raising timeout; otherwise fail closed
+  with a containment error.
+- Hostile offline contracts for setsid escape, receipt forge, truthy/bool schema abuse, and
+  post-return mutation.
+- Named multi-role foundation: optional `roles` map, `frontier-dispatch topology`, `role set|list|clear`,
+  and `consult --role` for additional consult/body bindings (e.g. orchestration consult = Codex Sol
+  @ xhigh) without inventing a host swap.
+- OpenRouter provider support (`openrouter`) with offline curated catalog, `OPENROUTER_API_KEY`
+  fail-closed live calls, and stdlib `frontier_openrouter.py` transport (no third-party deps).
+- Armed hook coverage hardening and hard dispatch task-count / provider-output bounds from the
+  0.3.7 integration tranche.
+
+### Changed
+- Provider set is now `codex|claude|grok|gemini|openrouter` for managed frontier and executor slots.
+- Topology projection documents host ownership, native slots, named roles, and provider-crossing
+  consent notes without spending tokens.
+
+### Security
+- Containment receipts are not worker-discoverable; worker env strips containment IPC secrets.
+- OpenRouter calls never print API keys; missing keys fail closed with an actionable message.
+
 ## [0.3.6] - 2026-07-15
 
 ### Added

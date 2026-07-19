@@ -5,7 +5,7 @@ FrontierFuse pairs two model roles. A configured frontier model is a managed con
 host-bound harness remains the session lead. Selecting a frontier model does not hot-swap the
 host conversation model, and no frontier model (including Claude Fable) is hard-wired.
 
-  - BODY / EXECUTOR = the selected provider (codex|claude|grok|gemini) that performs work.
+  - BODY / EXECUTOR = the selected provider (codex|claude|grok|gemini|openrouter) that performs work.
                       Codex default is unpinned (account-aware) unless FRONTIER_CODEX_MODEL /
                       --model / --executor-model explicitly pins one.
   - FRONTIER / ADVISOR = a managed consult to the configured frontier provider/model
@@ -67,7 +67,7 @@ STATE_SCHEMA_VERSION = 1
 HANDOFF_SCHEMA_VERSION = 1
 MAX_VERDICT_RECEIPT_BYTES = 1024 * 1024
 MAX_JSON_DOCUMENT_BYTES = 4 * 1024 * 1024
-KNOWN_EXECUTORS = frozenset({"codex", "claude", "grok", "gemini"})
+KNOWN_EXECUTORS = frozenset({"codex", "claude", "grok", "gemini", "openrouter"})
 KNOWN_PROFILES = frozenset({"advisor", "orchestrator"})
 
 
@@ -95,7 +95,8 @@ KNOWN_PROFILES = frozenset({"advisor", "orchestrator"})
 #   FRONTIER_GROK_PERMISSION_MODE=<mode> sets an explicit Grok permission mode
 CONFIG_KEYS = ("codex_model", "codex_effort", "fast", "fast_effort", "fast_model",
                "profile", "frontier_provider", "frontier_model", "executor", "claude_model",
-               "grok_model", "gemini_model", "grok_effort", "update_mode")
+               "grok_model", "gemini_model", "openrouter_model", "grok_effort", "update_mode",
+               "roles")
 UPDATE_MODES = frozenset({"passive", "manual", "off"})
 _GATE_PUNCTUATION = "();<>|&`"
 CODEX_EFFORT_LEVELS = frozenset({"low", "medium", "high", "xhigh"})
@@ -138,6 +139,8 @@ def defaults() -> dict:
         "claude_model": "claude-sonnet-5",
         "grok_model": "grok-4.5",
         "gemini_model": "gemini-3.5-flash",
+        "openrouter_model": "openrouter/auto",
+        "roles": {},
         "update_mode": "passive",
     }
 
@@ -158,6 +161,7 @@ def _env_config() -> dict:
         "claude_model": "FRONTIER_CLAUDE_MODEL",
         "grok_model": "FRONTIER_GROK_MODEL",
         "gemini_model": "FRONTIER_GEMINI_MODEL",
+        "openrouter_model": "FRONTIER_OPENROUTER_MODEL",
         "update_mode": "FRONTIER_UPDATE_MODE",
     }
     for key, env in m.items():
@@ -342,11 +346,16 @@ def _validate_config_values(cfg: dict, *, source: str = "configuration") -> None
     ):
         if key in cfg and (not isinstance(cfg[key], str) or cfg[key].lower() not in allowed):
             raise ValueError(f"invalid {key} in {source}; expected one of {sorted(allowed)}")
-    for key in ("codex_model", "frontier_model", "claude_model", "grok_model", "gemini_model"):
+    for key in ("codex_model", "frontier_model", "claude_model", "grok_model", "gemini_model",
+                "openrouter_model"):
         if key in cfg and not isinstance(cfg[key], str):
             raise ValueError(f"invalid {key} in {source}; expected a model ID string")
     if "fast_model" in cfg and cfg["fast_model"] is not None and not isinstance(cfg["fast_model"], str):
         raise ValueError(f"invalid fast_model in {source}; expected null or a model ID string")
+    if "roles" in cfg:
+        from frontier_topology import validate_roles
+        # Normalize in-place so persisted layers keep validated shape.
+        cfg["roles"] = validate_roles(cfg.get("roles"), source=f"{source}.roles")
 
 
 # --------------------------------------------------------------------------- #
@@ -821,6 +830,10 @@ def resolve_config(overrides: dict | None = None, session_id: str | None = None)
     if cfg["profile"] not in KNOWN_PROFILES:
         raise ValueError(f"unknown profile {cfg['profile']!r}; expected one of {sorted(KNOWN_PROFILES)}")
     cfg["update_mode"] = str(cfg.get("update_mode") or "passive").lower()
+    if not isinstance(cfg.get("openrouter_model"), str):
+        cfg["openrouter_model"] = "openrouter/auto"
+    from frontier_topology import validate_roles
+    cfg["roles"] = validate_roles(cfg.get("roles") or {}, source="effective configuration.roles")
     return cfg
 
 
@@ -1637,6 +1650,8 @@ def effective_frontier_model(cfg: dict) -> str:
         return pinned or "grok-4.5"
     if provider == "gemini":
         return pinned or "gemini-3.5-flash"
+    if provider == "openrouter":
+        return pinned or "openrouter/auto"
     return pinned or "account default"
 
 
@@ -1662,6 +1677,8 @@ def build_frontier_command(cfg: dict) -> list[str]:
         return ["grok", "--model", effective_frontier_model(cfg), "--prompt-file", "{prompt_file}"]
     if provider == "gemini":
         return ["gemini", "--model", effective_frontier_model(cfg), "--prompt", ""]
+    if provider == "openrouter":
+        return build_openrouter_command(cfg, model=effective_frontier_model(cfg))
     raise ValueError(f"unknown frontier provider {provider!r}")
 
 
@@ -1716,6 +1733,25 @@ def build_gemini_command(cfg: dict) -> list[str]:
     ]
 
 
+def build_openrouter_command(cfg: dict, *, model: str | None = None) -> list[str]:
+    """Build OpenRouter transport argv (stdlib helper). Override with FRONTIER_OPENROUTER_CMD."""
+    override = _split_command_override(
+        os.environ.get("FRONTIER_OPENROUTER_CMD"), "FRONTIER_OPENROUTER_CMD"
+    )
+    if override is not None:
+        return override
+    helper = str(Path(__file__).resolve().parent / "frontier_openrouter.py")
+    mid = model if model is not None else (cfg.get("openrouter_model") or "openrouter/auto")
+    return [
+        sys.executable,
+        helper,
+        "--model",
+        str(mid),
+        "--prompt-file",
+        "{prompt_file}",
+    ]
+
+
 def build_body_command(cfg: dict) -> list[str]:
     """Build the BODY/EXECUTOR command for the selected engine.
 
@@ -1743,6 +1779,8 @@ def build_body_command(cfg: dict) -> list[str]:
         return build_grok_command(cfg)
     if executor == "gemini":
         return build_gemini_command(cfg)
+    if executor == "openrouter":
+        return build_openrouter_command(cfg)
     raise ValueError(
         f"unknown executor {executor!r}; expected one of {sorted(KNOWN_EXECUTORS)} "
         f"(or set FRONTIER_BODY_CMD / FRONTIER_EXECUTOR_CMD as a whole-command override)"

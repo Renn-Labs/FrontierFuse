@@ -5,7 +5,7 @@ Codex, Claude, Grok, and Gemini **providers** in executor-led `advisor` and host
 `orchestrator` profiles. Fable 5 is the recommended Claude frontier **model**, not a provider and
 not the only brain.
 
-Current version: **0.3.6**
+Current version: **0.3.7**
 
 **Providers are not models.** Choose provider and model as separate decisions. Never invent model
 IDs; use `frontier-dispatch models` and only accept exact IDs the provider CLI can verify.
@@ -434,3 +434,34 @@ shims, provider dry-runs, and doctor output.
 
 MIT licensed. Scrub and handoff helpers are adapted from
 [FleetFuse](https://github.com/Renn-Labs/FleetFuse); see `NOTICE`.
+
+## Multi-role topology
+
+Native durable slots remain **frontier** (managed consult) and **executor** (managed body). The host
+harness model is never swapped by the plugin.
+
+Add named roles when you hold several models:
+
+```bash
+# Premium host (Opus in Claude Code) + Fable frontier + Grok bodies + Sol orchestration consult
+frontier-dispatch config --global \
+  --profile advisor \
+  --frontier-provider claude --frontier-model claude-fable-5 \
+  --executor grok --grok-model grok-4.5
+
+frontier-dispatch role set --global --name orchestration_consult --kind consult \
+  --role-provider codex --role-model gpt-5.6-sol --role-effort xhigh
+
+frontier-dispatch topology --json   # no token spend
+frontier-dispatch consult --role orchestration_consult --dry-run --question "outline the plan"
+```
+
+### OpenRouter menagerie
+
+```bash
+export OPENROUTER_API_KEY=...   # required for live OpenRouter calls only
+frontier-dispatch config --global --executor openrouter --openrouter-model openrouter/auto
+frontier-dispatch models --provider openrouter --no-discover --json
+```
+
+Context sent to OpenRouter leaves your machine and may be routed to third-party models.

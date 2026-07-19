@@ -1,7 +1,7 @@
 # FrontierFuse Execution Plan
 
 This is the durable implementation backlog after the provider-neutral FrontierFuse line. The shipped
-baseline documented here is **0.3.6**. Releases convert independent frontier-model review into
+baseline documented here is **0.3.7**. Releases convert independent frontier-model review into
 sequenced, testable work. A release is complete only when every acceptance gate is backed by fresh
 evidence.
 
@@ -211,7 +211,9 @@ preserve the count. After the adapter boundary, the product spine (`0.4.x` -> `0
 and distribution spine (`0.4.x` -> `0.6.x` -> `0.7.x`) may develop in parallel, but both must
 converge at `0.9.0`; no lane may bypass its own predecessor.
 
-### Release 0.3.7 - Guardrail and Execution Boundary Hardening
+### Release 0.3.7 - Guardrail and Execution Boundary Hardening (Delivered 2026-07-19)
+
+Also ships multi-role topology foundation + OpenRouter provider (see DESIGN).
 
 Goal: close confirmed safety gaps before introducing the provider adapter boundary.
 
@@ -429,12 +431,12 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-**Shipped baseline: `0.3.6`.** Delivered work through 0.3.6 is complete (trust boundary, install/
+**Shipped baseline: `0.3.7`.** Delivered work through 0.3.6 is complete (trust boundary, install/
 doctor/updates, roles, reliable configuration, provider-aware model selection, release safety,
 portability fixes, executor-model alias).
 
-**Next planned tranche: `0.3.7` (Guardrail and Execution Boundary Hardening), followed by `0.4.0`
+**Next planned tranche: `0.4.0` (Guardrail and Execution Boundary Hardening), followed by `0.4.0`
 (Provider Adapter Contract).** All later operating releases remain pending until their predecessor
 dependencies and evidence gates are satisfied. Isolated candidate branches may be built in
 parallel, but they do not integrate out of order and do not change version carriers. Docs and
-install UX may improve on the 0.3.6 baseline without claiming unfinished capabilities.
+install UX may improve on the 0.3.7 baseline without claiming unfinished capabilities.
