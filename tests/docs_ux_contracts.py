@@ -235,8 +235,34 @@ def test_contributing_four_file_version_and_scrub() -> None:
         "frontier_update.py",
         "pre-push-check.sh",
         "public-release-scrub.py",
+        "hooksPath",
+        "--no-verify",
     ):
         assert needle in text, f"CONTRIBUTING.md missing {needle!r}"
+
+
+def test_agent_public_push_gate_docs_aligned() -> None:
+    """Claude Code and Codex must both see mandatory public-push gate language."""
+    agents = _read(ROOT / "AGENTS.md")
+    claude = _read(ROOT / "CLAUDE.md")
+    checklist = _read(ROOT / "docs" / "PUBLIC_RELEASE_CHECKLIST.md")
+    for label, text in (
+        ("AGENTS.md", agents),
+        ("CLAUDE.md", claude),
+        ("docs/PUBLIC_RELEASE_CHECKLIST.md", checklist),
+    ):
+        for needle in (
+            "git config core.hooksPath githooks",
+            "scripts/pre-push-check.sh",
+            "public-release-scrub.py",
+            "--no-verify",
+            "maintainer-escape",
+        ):
+            assert needle in text, f"{label} missing public-push gate needle {needle!r}"
+    # Codex-facing AGENTS.md must call out both Claude Code and Codex.
+    assert "Claude Code" in agents and "Codex" in agents
+    assert "Public Push Gate" in agents
+    assert "Agent rules" in checklist
 
 
 def main() -> int:
@@ -252,6 +278,7 @@ def main() -> int:
         test_no_stale_product_claims,
         test_skills_host_bound_and_decision_order,
         test_contributing_four_file_version_and_scrub,
+        test_agent_public_push_gate_docs_aligned,
     ]
     failed = 0
     for test in tests:

@@ -421,7 +421,7 @@ sent by ordinary doctor or passive update checks.
 ## Maintainer Verification
 
 ```bash
-git config core.hooksPath githooks
+git config core.hooksPath githooks   # once per clone; required for pre-push hook
 python3 tests/run_contracts.py
 claude plugin validate .
 scripts/pre-push-check.sh
@@ -430,8 +430,9 @@ python3 scripts/public-release-scrub.py --all-history
 
 The release gate checks synchronized versions (plugin, marketplace, MCP server, update module),
 public-data scrub rules, model-name policy, Python 3.10/3.12 contracts, plugin validation, portable
-shims, provider dry-runs, and doctor output.
-
+shims, provider dry-runs, and doctor output. Agents (Claude Code, Codex, Grok) must run the same
+gate before public origin push/tag/release and must not use `git push --no-verify`. See `AGENTS.md`
+and `docs/PUBLIC_RELEASE_CHECKLIST.md`.
 MIT licensed. Scrub and handoff helpers are adapted from
 [FleetFuse](https://github.com/Renn-Labs/FleetFuse); see `NOTICE`.
 

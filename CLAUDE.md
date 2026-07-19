@@ -77,6 +77,9 @@ synthetic JSON, `verify` snapshot stability). Tests must stay keyless/offline (d
 
 - Do **not** create the GitHub remote, push, tag a release, publish packages, or make the repo
   public without explicit maintainer approval.
+- When maintainer approval **is** given for a public push/tag/release, follow **Public release scrub
+  memory** below with no shortcuts. This applies equally if the work is done in Claude Code, Codex,
+  Grok, or any other agent.
 - Keep claims precise: FrontierFuse coordinates a body engine and preserves deterministic verification
   artifacts. It is not a proven autonomous workforce; do not claim superiority over prior art it
   builds on (steipete/agent-scripts `codex-first`).
@@ -87,9 +90,16 @@ synthetic JSON, `verify` snapshot stability). Tests must stay keyless/offline (d
 
 - This rule is cross-agent project memory. Keep it aligned with `AGENTS.md` and
   `docs/PUBLIC_RELEASE_CHECKLIST.md` so Claude Code, Codex, Grok, and other agents see the same gate.
-- Before public push, tag, release, marketplace update, or repo-publication work, run
-  `scripts/pre-push-check.sh`; before first public exposure or after history rewrites, also run
-  `scripts/public-release-scrub.py --all-history`.
+- Before any public push to GitHub (`origin`), tag, release, marketplace update, or repo-publication
+  work:
+  1. `git config core.hooksPath githooks` (enables tracked `githooks/pre-push` → `scripts/pre-push-check.sh`)
+  2. `scripts/pre-push-check.sh` must pass
+  3. `scripts/public-release-scrub.py --all-history` before first public exposure or after history rewrites
+- **Hard bans:** do not use `git push --no-verify` for public origin push/tag/release; do not use
+  `FRONTIER_SKIP_PRE_PUSH=1` alone; do not use `--maintainer-escape` for public push/tag/release.
+  If the gate fails, fix the failure.
+- Public pushes must be from `main` or `master`. CI (`.github/workflows/offline.yml`) is a backstop,
+  not a substitute for the local gate.
 - Do not print matched secret values. Report only file, line, commit scope, and finding type.
 - Test fixtures must not contain complete token-shaped literals; build fake values from pieces.
 - If a real secret appears in files or history, stop release work, rotate/revoke it, and scrub local

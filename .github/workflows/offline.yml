@@ -31,8 +31,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Byte-compile all modules
-        run: python -m compileall -q frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py frontier_verify.py frontier_scrub.py hooks tests scripts
-      - name: Foundation smoke (no keys)
+        run: python -m compileall -q frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py frontier_verify.py frontier_scrub.py frontier_topology.py frontier_openrouter.py hooks tests scripts      - name: Foundation smoke (no keys)
         run: python frontier_common.py
       - name: Public-release scrub (worktree)
         run: python scripts/public-release-scrub.py

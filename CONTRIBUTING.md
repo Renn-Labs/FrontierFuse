@@ -33,21 +33,30 @@ Do not bump version fields in a docs-only lane unless the release intentionally 
 
 Before any public branch push, tag, marketplace update, or first public exposure:
 
-1. `scripts/pre-push-check.sh` must pass (version sync, install hygiene, scrub candidates, plugin
-   validation, compile, offline contracts, CI branch coverage, dry-run smokes).
-2. Before first public exposure or after any history rewrite, also run
+1. Enable the tracked hook in this clone (once per clone):
+   ```bash
+   git config core.hooksPath githooks
+   ```
+   This makes `git push` run `githooks/pre-push` → `scripts/pre-push-check.sh`.
+2. `scripts/pre-push-check.sh` must pass (denylist, version sync, scrub, model-name policy,
+   whitespace, compile, offline contracts, plugin validate, dry-run smokes, doctor).
+3. Before first public exposure or after any history rewrite, also run
    `scripts/public-release-scrub.py --all-history`.
-3. Do not print matched secret values. Report only file, line, commit scope, and finding type.
-4. Never commit `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`, `.grokprint/`,
+4. Do not print matched secret values. Report only file, line, commit scope, and finding type.
+5. Never commit `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`, `.grokprint/`,
    credentials, or private absolute paths.
+6. **Do not** use `git push --no-verify` for public origin push/tag/release. Fix gate failures.
+7. **Do not** use `--maintainer-escape` or silent `FRONTIER_SKIP_PRE_PUSH` for public release work.
 
-Creating the GitHub remote, pushing, tagging releases, publishing packages, making the repo public,
-or adding live-provider CI remains a maintainer-gated action.
+Creating the GitHub remote, pushing, tagging releases, publishing packages, or adding live-provider
+CI remains a maintainer-authorized action. Once authorized, the gates above are mandatory for
+humans and for every agent (Claude Code, Codex, Grok, etc.). See `AGENTS.md` and
+`docs/PUBLIC_RELEASE_CHECKLIST.md`.
 
 ## Dev loop
 
 ```bash
-git config core.hooksPath githooks       # enable the tracked pre-push release gate
+git config core.hooksPath githooks       # enable the tracked pre-push release gate (once per clone)
 python3 tests/run_contracts.py       # every offline contract suite must pass
 python3 frontier_common.py              # sanity: effective config + built commands
 python3 frontier_dispatch.py doctor     # readiness (exit 0 ready, 1 not ready, 2 config/session invalid)

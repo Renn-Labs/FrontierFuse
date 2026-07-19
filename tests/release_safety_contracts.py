@@ -343,9 +343,31 @@ def test_offline_workflow_wires_scrub_and_prepush() -> None:
     _assert("pre-push-check.sh" in yml, "offline workflow must run pre-push equivalent")
     _assert("--offline" in yml, "pre-push invocation must be offline subset")
     _assert("release_denylist.py" in yml, "offline workflow must check shared denylist")
+    # New modules must stay in CI compile list.
+    _assert("frontier_topology.py" in yml, "offline workflow must compile frontier_topology.py")
+    _assert("frontier_openrouter.py" in yml, "offline workflow must compile frontier_openrouter.py")
     # No live provider secret env wiring
     _assert("OPENAI_API_KEY" not in yml, "must not wire live provider keys")
     _assert("ANTHROPIC_API_KEY" not in yml, "must not wire live provider keys")
+
+
+def test_pre_push_compiles_new_modules() -> None:
+    src = PRE_PUSH.read_text()
+    _assert("frontier_topology.py" in src, "pre-push must byte-compile frontier_topology.py")
+    _assert("frontier_openrouter.py" in src, "pre-push must byte-compile frontier_openrouter.py")
+
+
+def test_agent_gate_memory_files_present() -> None:
+    """Agent-facing memory must exist and ban hook skips for public pushes."""
+    agents = (ROOT / "AGENTS.md").read_text()
+    claude = (ROOT / "CLAUDE.md").read_text()
+    checklist = (ROOT / "docs" / "PUBLIC_RELEASE_CHECKLIST.md").read_text()
+    for label, text in (("AGENTS.md", agents), ("CLAUDE.md", claude), ("checklist", checklist)):
+        _assert("hooksPath" in text, f"{label} must mention hooksPath")
+        _assert("pre-push-check.sh" in text, f"{label} must mention pre-push-check.sh")
+        _assert("--no-verify" in text, f"{label} must ban --no-verify for public pushes")
+    _assert("Claude Code" in agents and "Codex" in agents, "AGENTS.md must name Claude Code and Codex")
+    _assert("Public Push Gate" in agents, "AGENTS.md must have Public Push Gate section")
 
 
 def main() -> int:
@@ -364,6 +386,8 @@ def main() -> int:
         test_pre_push_help_documents_escape_limitation,
         test_pre_push_source_has_all_history_and_loud_escape,
         test_offline_workflow_wires_scrub_and_prepush,
+        test_pre_push_compiles_new_modules,
+        test_agent_gate_memory_files_present,
         # Heavier: runs full offline gate including this suite via discovery once nested.
         # Keep last so unit checks fail fast first.
         test_pre_push_offline_runs_public_gates,

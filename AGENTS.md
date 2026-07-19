@@ -1,24 +1,65 @@
 # FrontierFuse Agent Memory
 
-This file is shared guidance for Codex, Grok, and any other agent that reads repo-local agent
-instructions. Claude Code also has `CLAUDE.md`; keep the two aligned.
+This file is shared guidance for Codex, Claude Code, Grok, and any other agent that reads
+repo-local agent instructions. Keep `AGENTS.md` and `CLAUDE.md` aligned on release gates.
 
-## Public Release Scrub
+## Public Push Gate (MANDATORY for every agent)
 
-Before any public push, release, tag, plugin marketplace update, or repo-publication step:
+Before any **public** `git push` to GitHub (`origin`), tag, GitHub release, plugin marketplace
+update, or repo-publication step, every agent (Claude Code, Codex, Grok, etc.) MUST:
 
-1. Run `scripts/pre-push-check.sh`.
-2. Run `scripts/public-release-scrub.py --all-history` before first public exposure or after any
-   history rewrite.
-3. Bump `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`,
-   `frontier_advisor_mcp.py`, and `frontier_update.py` together. Confirm `CHANGELOG.md`, README
-   install/upgrade/doctor docs, and skills all reflect the same release.
-4. Do not print matched secret values in chat, logs, issues, or commits. Report only file, line, and
-   finding type.
-5. Never commit `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`,
+1. Ensure the tracked hook is active in this clone:
+   ```bash
+   git config core.hooksPath githooks
+   ```
+   `githooks/pre-push` always runs `scripts/pre-push-check.sh`. Without `hooksPath`, a normal
+   `git push` will skip the gate.
+2. Run the gate explicitly before pushing (do not rely only on the hook):
+   ```bash
+   scripts/pre-push-check.sh
+   ```
+3. Before first public exposure of a branch tip, after any history rewrite, or when releasing:
+   ```bash
+   scripts/public-release-scrub.py --all-history
+   ```
+4. Bump these **four** version carriers together and keep them equal:
+   - `.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json`
+   - `frontier_advisor_mcp.py` (`SERVER_VERSION`)
+   - `frontier_update.py` (`CURRENT_VERSION`)
+   Confirm `CHANGELOG.md`, README install/upgrade/doctor docs, and skills match the same release.
+5. Never print matched secret values. Report only file, line, commit scope, and finding type.
+6. Never commit `runs/`, `verdict.json`, provider transcripts/logs, `.omc/`, `.omx/`,
    `.grokprint/`, `.buildlog/`, local config/state, credentials, or private absolute paths.
-6. If a real secret is found, stop release work, rotate/revoke the secret, scrub local history before
-   pushing, and document only the remediation status.
+7. If a real secret is found, **stop**: rotate/revoke it, scrub local history if needed, and only
+   then continue. Document remediation status only — not the secret.
+
+### Hard bans for public push/tag/release
+
+- **Do not** use `git push --no-verify` (or any equivalent hook skip) for public `origin` pushes,
+  tags, or releases. If the hook blocks, fix the failure; do not bypass it.
+- **Do not** use `FRONTIER_SKIP_PRE_PUSH=1` alone — it fails closed.
+- **Do not** use `--maintainer-escape` for public push/tag/release. That escape only skips optional
+  local smokes and still runs denylist, version metadata, and scrub; it is **not** a public-release
+  bypass.
+- Public pushes must be from **`main` or `master`** (the pre-push script enforces this).
+- CI (`.github/workflows/offline.yml`) is a **backstop**, not a substitute for running the local
+  gate before you push.
+
+### What the gate runs
+
+`githooks/pre-push` → `scripts/pre-push-check.sh`, which always includes:
+
+- tracked artifact denylist (`scripts/release_denylist.py`)
+- four-file version metadata sync
+- public-release scrub (push-range; use `--all-history` for full release)
+- market model-name policy
+- whitespace check
+- byte-compile of shipped modules (including `frontier_topology.py`, `frontier_openrouter.py`)
+- offline contract aggregate + runner self-test
+
+Optional local smokes (skipped only with `--offline`/`--ci` or loud `--maintainer-escape`):
+plugin validate, foundation smoke, provider dry-runs, doctor.
 
 ## Market Model Accuracy
 
@@ -26,7 +67,7 @@ Before changing default model IDs, README claims, skill text, marketplace metada
 current provider models, verify the exact model IDs against official provider documentation. Do not
 infer unreleased family names.
 
-Exact verified IDs and policies for this project (as of 0.3.0 guidance):
+Exact verified IDs and policies for this project (as of 0.3.7 guidance):
 
 | Role | ID / policy |
 |-|-|
@@ -36,11 +77,12 @@ Exact verified IDs and policies for this project (as of 0.3.0 guidance):
 | Gemini executor default | `gemini-3.5-flash`; catalog includes official current/previous IDs |
 | Codex executor default | deliberately **unpinned** (empty; Codex CLI account-aware default) |
 | GPT-5.6 catalog | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` |
+| OpenRouter | provider `openrouter`; use exact catalog or account-visible IDs only; live calls need `OPENROUTER_API_KEY` |
 
 Use `frontier_models.py` as the curated catalog and keep its source URLs current. Provider and model
-are separate concepts: `codex|claude|grok|gemini` are providers; Fable, Sonnet, Opus, GPT-5.6,
-Grok releases, and Gemini releases are models. Never add an account-specific ID such as a requested
-Grok version to the static catalog until official documentation or the installed CLI verifies it.
+are separate concepts: `codex|claude|grok|gemini|openrouter` are providers; Fable, Sonnet, Opus,
+GPT-5.6, Grok releases, Gemini releases, and OpenRouter model IDs are models. Never add an
+account-specific ID to the static catalog until official documentation or the installed CLI verifies it.
 
 Do not claim separate Codex/Grok/Gemini plugin packages ship unless maintainers have published them.
 
@@ -48,5 +90,5 @@ Update reminders remain privacy-preserving and non-blocking: ordinary doctor is 
 checks run only during explicit FrontierFuse use, use the owner-only seven-day cache, and never install
 automatically. Keep Claude, Codex, Grok, and Gemini install/update/restart/uninstall docs synchronized.
 
-Pushing, tagging, publishing packages, making the repo public, or adding live-provider CI remains a
-maintainer-gated action.
+Pushing, tagging, and publishing remain maintainer-authorized actions — but when authorized, the
+**Public Push Gate** section above is mandatory for every agent.

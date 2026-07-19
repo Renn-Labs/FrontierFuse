@@ -203,6 +203,29 @@ if not offline and branch not in branches:
 def semver_tuple(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in value.split("."))  # type: ignore[return-value]
 
+def _requires_version_bump(path: str) -> bool:
+    """Docs/agent-memory-only lanes may ship without a version bump.
+
+    Shipped product modules, hooks, bins, and version carriers still require one.
+    Maintainer gate scripts under scripts/ may improve docs-only lanes without a
+    product version bump.
+    """
+    if path.startswith(("tests/", "docs/", "skills/", ".github/", "scripts/")):
+        return False
+    if path in {
+        "README.md",
+        "CHANGELOG.md",
+        "CONTRIBUTING.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "SECURITY.md",
+        "CODE_OF_CONDUCT.md",
+        "LICENSE",
+        "NOTICE",
+        "settings.hooks.snippet.json",
+    }:
+        return False
+    return True
 if not offline:
     upstream = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
@@ -226,9 +249,20 @@ if not offline:
                 )
                 has_local_commits = ahead.returncode == 0 and int(ahead.stdout.strip() or "0") > 0
                 if has_local_commits and semver_tuple(version) <= semver_tuple(old_version):
-                    errors.append(
-                        f"version must be bumped above upstream {old_version}; current is {version}"
+                    changed = subprocess.run(
+                        ["git", "diff", "--name-only", f"{upstream_ref}..HEAD"],
+                        capture_output=True,
+                        text=True,
                     )
+                    paths = [
+                        line.strip()
+                        for line in (changed.stdout or "").splitlines()
+                        if line.strip()
+                    ]
+                    if any(_requires_version_bump(path) for path in paths):
+                        errors.append(
+                            f"version must be bumped above upstream {old_version}; current is {version}"
+                        )
 
 if errors:
     for error in errors:
@@ -265,8 +299,7 @@ git diff --check
 step "byte compile"
 python3 -m compileall -q \
   frontier_common.py frontier_advisor.py frontier_advisor_mcp.py frontier_dispatch.py frontier_models.py frontier_update.py \
-  frontier_verify.py frontier_scrub.py hooks tests scripts
-
+  frontier_verify.py frontier_scrub.py frontier_topology.py frontier_openrouter.py hooks tests scripts
 step "offline contracts (aggregate)"
 python3 tests/run_contracts.py
 
