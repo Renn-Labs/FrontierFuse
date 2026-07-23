@@ -5,7 +5,7 @@ Codex, Claude, Grok, and Gemini **providers** in executor-led `advisor` and host
 `orchestrator` profiles. Fable 5 is the recommended Claude frontier **model**, not a provider and
 not the only brain.
 
-Current version: **0.3.7**
+Current version: **0.3.8**
 
 **Providers are not models.** Choose provider and model as separate decisions. Never invent model
 IDs; use `frontier-dispatch models` and only accept exact IDs the provider CLI can verify.

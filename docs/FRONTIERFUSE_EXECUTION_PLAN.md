@@ -1,7 +1,7 @@
 # FrontierFuse Execution Plan
 
 This is the durable implementation backlog after the provider-neutral FrontierFuse line. The shipped
-baseline documented here is **0.3.7**. Releases convert independent frontier-model review into
+baseline documented here is **0.3.8**. Releases convert independent frontier-model review into
 sequenced, testable work. A release is complete only when every acceptance gate is backed by fresh
 evidence.
 
@@ -184,7 +184,8 @@ scope is not shipped capability.
 
 | # | Release | Operating outcome |
 |-:|-|-|
-| 1 | `0.3.7` | Guardrail and execution-boundary hardening |
+| 1 | `0.3.8` | Armed TaskOutput allowlist (orchestrator poll) |
+| 2 | `0.3.7` | Guardrail and execution-boundary hardening |
 | 2 | `0.4.0` | Provider Adapter v1 contract and migration |
 | 3 | `0.4.1` | Offline provider capability evidence |
 | 4 | `0.4.2` | Explicit auth, entitlement, and model probes |
@@ -431,7 +432,7 @@ Non-goals: last-minute providers, automatic updates, legacy removal, plugin-ID r
 
 ## Current Execution Tranche
 
-**Shipped baseline: `0.3.7`.** Delivered work through 0.3.6 is complete (trust boundary, install/
+**Shipped baseline: `0.3.8`.** Delivered work through 0.3.6 is complete (trust boundary, install/
 doctor/updates, roles, reliable configuration, provider-aware model selection, release safety,
 portability fixes, executor-model alias).
 
@@ -439,4 +440,4 @@ portability fixes, executor-model alias).
 (Provider Adapter Contract).** All later operating releases remain pending until their predecessor
 dependencies and evidence gates are satisfied. Isolated candidate branches may be built in
 parallel, but they do not integrate out of order and do not change version carriers. Docs and
-install UX may improve on the 0.3.7 baseline without claiming unfinished capabilities.
+install UX may improve on the 0.3.8 baseline without claiming unfinished capabilities.

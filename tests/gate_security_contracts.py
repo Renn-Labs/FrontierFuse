@@ -538,13 +538,28 @@ def test_hook_armed_fail_closed_unknown_and_mutating_tools() -> None:
             "ListMcpResourcesTool",
             "ReadMcpResourceTool",
             "ToolSearch",
+            "TaskOutput",
         ):
             proc = _run_hook({
                 "session_id": sid,
                 "tool_name": tool,
-                "tool_input": {},
+                "tool_input": {"task_id": "example"} if tool == "TaskOutput" else {},
             })
             _assert(_hook_allowed(proc), f"armed must allow readonly {tool!r}: {proc.stdout!r}")
+
+        # Spawning / stopping background work remains fail-closed (mutation of control plane).
+        for tool in (
+            "Task",
+            "Agent",
+            "TaskStop",
+            "TaskCreate",
+        ):
+            proc = _run_hook({
+                "session_id": sid,
+                "tool_name": tool,
+                "tool_input": {"prompt": "x"} if tool in ("Task", "Agent") else {"task_id": "x"},
+            })
+            _assert(_denied(proc), f"armed must deny non-readonly task tool {tool!r}: {proc.stdout!r}")
 
         # Stale / obsolete names and broad dynamic MCP prefixes stay fail-closed.
         for tool in (

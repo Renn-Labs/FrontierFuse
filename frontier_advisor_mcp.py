@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import frontier_advisor
 
 PROTO = "2025-06-18"
-SERVER_VERSION = "0.3.7"
+SERVER_VERSION = "0.3.8"
 INSTRUCTIONS = (
     "Consult the configured frontier advisor for planning, hard design decisions, architecture "
     "tradeoffs, and independent review. You are the selected executor: run the main loop and do "

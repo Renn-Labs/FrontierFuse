@@ -67,7 +67,7 @@ Before changing default model IDs, README claims, skill text, marketplace metada
 current provider models, verify the exact model IDs against official provider documentation. Do not
 infer unreleased family names.
 
-Exact verified IDs and policies for this project (as of 0.3.7 guidance):
+Exact verified IDs and policies for this project (as of 0.3.8 guidance):
 
 | Role | ID / policy |
 |-|-|

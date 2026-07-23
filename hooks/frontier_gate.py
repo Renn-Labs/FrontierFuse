@@ -40,6 +40,10 @@ ALLOW_READONLY_TOOLS = frozenset({
     "ListMcpResourcesTool",
     "ReadMcpResourceTool",
     "ToolSearch",
+    # Background task polling only — does not mutate the workspace. Required so an armed
+    # orchestrator can inspect completed `frontier-dispatch` Bash bodies (TaskOutput). Spawning
+    # (Task/Agent) and stopping (TaskStop) remain fail-closed.
+    "TaskOutput",
 })
 
 # Shell metacharacters that would let an allowlisted command chain into an arbitrary one

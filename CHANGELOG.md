@@ -8,6 +8,13 @@ versioning once it reaches 1.0.
 
 No unreleased changes.
 
+## [0.3.8] - 2026-07-22
+
+### Fixed
+- Armed PreToolUse guardrail now allows `TaskOutput` (read-only background-task polling) so an
+  orchestrator host can inspect completed `frontier-dispatch` Bash bodies without kill-switching.
+  Spawning (`Task` / `Agent` / `TaskCreate`) and stopping (`TaskStop`) remain fail-closed.
+
 ## [0.3.7] - 2026-07-19
 
 ### Added

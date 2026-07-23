@@ -10,8 +10,8 @@
       "name": "frontierfuse",
       "source": "./",
       "description": "Pair Fable, GPT, Claude, Grok, or Gemini frontier reasoning with a separate Codex, Claude, Grok, or Gemini executor. Includes advisor and orchestrator profiles.",
-      "version": "0.3.7"
+      "version": "0.3.8"
     }
   ],
-  "version": "0.3.7"
+  "version": "0.3.8"
 }
